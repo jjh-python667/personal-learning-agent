@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>学习搭子 · 个人 Agent</title>
+    <link rel="stylesheet" href="/static/style.css" />
+  </head>
+  <body>
+    <aside>
+      <a class="brand" href="/"
+        >✦ <span>学习搭子<small>YOUR PERSONAL AGENT</small></span></a
+      >
+      <nav id="nav"></nav>
+      <div class="sidebottom">
+        <span class="dot"></span> 私人学习空间
+        <p id="model">正在连接…</p>
+        <small>资料与记录保存在这台服务器</small>
+      </div>
+    </aside>
+    <main>
+      <header>
+        <div>
+          <span class="eyebrow">一点点积累，也是在前进</span>
+          <h1 id="heading">一起学点什么？</h1>
+        </div>
+        <button id="refresh" class="outline">↻ 刷新</button>
+      </header>
+      <div id="notice"></div>
+      <div id="due"></div>
+      <section id="view" aria-live="polite"></section>
+      <footer>北京时间 · 提醒仅在本网页显示，需服务运行并打开页面。</footer>
+    </main>
+    <div id="toast" role="status"></div>
+    <dialog id="documentDialog">
+      <button id="closeDialog" class="outline">关闭</button>
+      <h2 id="documentTitle"></h2>
+      <pre id="documentText"></pre>
+    </dialog>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
