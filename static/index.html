@@ -27,6 +27,7 @@
         <button id="refresh" class="outline">↻ 刷新</button>
       </header>
       <div id="notice"></div>
+      <section id="workspacePicker" class="workspace-picker" aria-label="课程和会话"></section>
       <div id="due"></div>
       <section id="view" aria-live="polite"></section>
       <footer>北京时间 · 提醒仅在本网页显示，需服务运行并打开页面。</footer>
@@ -36,6 +37,19 @@
       <button id="closeDialog" class="outline">关闭</button>
       <h2 id="documentTitle"></h2>
       <pre id="documentText"></pre>
+    </dialog>
+    <dialog id="workspaceDialog">
+      <form id="workspaceForm">
+        <h2 id="workspaceDialogTitle">新建课程</h2>
+        <p id="workspaceDialogHint" class="subtle"></p>
+        <label for="workspaceTitle">名称</label>
+        <input id="workspaceTitle" maxlength="60" required />
+        <p id="workspaceError" class="chat-error" role="alert"></p>
+        <div class="row composer-actions">
+          <button id="workspaceCancel" class="outline" type="button">取消</button>
+          <button id="workspaceSubmit" type="submit">创建</button>
+        </div>
+      </form>
     </dialog>
     <script src="/static/app.js"></script>
   </body>

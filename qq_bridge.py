@@ -39,7 +39,7 @@ class Client(botpy.Client):
             else:
                 async with httpx.AsyncClient(timeout=700) as client:
                     response = await client.post('http://127.0.0.1:8000/api/chat',json={'text':text},
-                        auth=('qq-bridge',os.environ['APP_PASSWORD']))
+                        auth=('qq-bridge',os.environ['APP_PASSWORD']), headers={'X-Study-Channel':'qq'})
                 if response.status_code!=200:
                     replies = ['这次处理没有成功，请在管理网页查看任务记录。']
                 else:

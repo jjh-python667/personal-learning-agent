@@ -20,7 +20,7 @@ RESUMABLE = (STATUS_PAUSED, STATUS_WAITING, STATUS_ACTIVE)
 
 
 def _document(document_id):
-    docs = db.rows('SELECT * FROM documents WHERE id=?', (document_id,))
+    docs = db.rows('SELECT * FROM documents WHERE id=? AND course_id=?', (document_id, db.course_id()))
     if not docs:
         raise LessonError('资料不存在，无法开始或继续学习任务。')
     doc = docs[0]
@@ -176,7 +176,7 @@ def _goal_kind(task):
 def _waiting_prompt(task):
     quiz = None
     if task['active_quiz_id']:
-        found = db.rows('SELECT id,question FROM quizzes WHERE id=?', (task['active_quiz_id'],))
+        found = db.rows('SELECT id,question FROM quizzes WHERE id=? AND course_id=?', (task['active_quiz_id'], db.course_id()))
         quiz = found[0] if found else None
     unit = _unit(_goal_kind(task))
     lines = [
@@ -322,7 +322,7 @@ async def advance_chunk(task_id):
         if existing_quiz_step and existing_quiz_step['status'] == 'succeeded':
             evidence_q = json.loads(existing_quiz_step['evidence_json'])
             qid = evidence_q.get('quiz_id')
-            qrow = db.rows('SELECT id,question FROM quizzes WHERE id=?', (qid,)) if qid else []
+            qrow = db.rows('SELECT id,question FROM quizzes WHERE id=? AND course_id=?', (qid, db.course_id())) if qid else []
             if qrow:
                 quiz_payload = {'id': qrow[0]['id'], 'question': qrow[0]['question'], 'reused': True}
                 active_quiz_id = qrow[0]['id']
@@ -359,8 +359,8 @@ async def advance_chunk(task_id):
                     'text': (window_texts[i] or '')[:800],
                 } for i, p in enumerate(page_range)]
                 qid = db.execute(
-                    'INSERT INTO quizzes(question,expected,sources,created) VALUES(?,?,?,?)',
-                    (obj['question'][:4000], obj['expected'][:6000], db.encode(sources), db.now()),
+                    'INSERT INTO quizzes(question,expected,sources,created,course_id) VALUES(?,?,?,?,?)',
+                    (obj['question'][:4000], obj['expected'][:6000], db.encode(sources), db.now(), db.course_id()),
                 )
                 evidence_q = {
                     'pages': page_range,
@@ -446,7 +446,7 @@ def format_advance_reply(result):
 
 def resolve_task_quiz(con, quiz_id, grade=None, skipped=False):
     """把答案和学习任务一起保存；其中一步失败，就一起撤销。"""
-    tasks = con.execute('SELECT * FROM learning_tasks WHERE active_quiz_id=?', (quiz_id,)).fetchall()
+    tasks = con.execute('SELECT * FROM learning_tasks WHERE active_quiz_id=? AND course_id=?', (quiz_id, db.course_id())).fetchall()
     for row in tasks:
         task = dict(row)
         kind = 'skip' if skipped else 'grade'
@@ -523,7 +523,7 @@ def tasks_for_state():
     """Enrich tasks for /api/state."""
     out = []
     for t in db.list_tasks(limit=50):
-        docs = db.rows('SELECT title,location_kind FROM documents WHERE id=?', (t['document_id'],))
+        docs = db.rows('SELECT title,location_kind FROM documents WHERE id=? AND course_id=?', (t['document_id'], db.course_id()))
         title = docs[0]['title'] if docs else '(资料已删除)'
         location_kind = docs[0]['location_kind'] if docs else 'page'
         out.append({

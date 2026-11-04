@@ -20,6 +20,10 @@ let state = {},
 let draft = "";
 let live = null;
 let chatError = "";
+let currentSession = Number(sessionStorage.getItem("study.session")) || 1;
+let switching = false;
+let workspaceKind = "courses";
+const sessionDrafts = new Map();
 const pages = {
   chat: ["✦", "学习对话", "一起学点什么？"],
   tasks: ["▷", "学习任务", "页窗推进与暂停继续"],
@@ -46,11 +50,11 @@ function toast(message) {
   );
 }
 async function api(path, method = "GET", body) {
-  const opts = { method };
+  const opts = { method, headers: { "X-Study-Session": String(currentSession) } };
   if (body instanceof FormData) opts.body = body;
   else if (body !== undefined) {
     opts.body = JSON.stringify(body);
-    opts.headers = { "Content-Type": "application/json" };
+    opts.headers["Content-Type"] = "application/json";
   }
   const response = await fetch("/api" + path, opts);
   if (!response.ok) {
@@ -58,17 +62,22 @@ async function api(path, method = "GET", body) {
     try {
       data = await response.json();
     } catch {}
-    throw Error(
+    const error = Error(
       typeof data?.detail === "string"
         ? data.detail
         : `请求失败（${response.status}）`,
     );
+    error.status = response.status;
+    throw error;
   }
   return response.json();
 }
 async function refresh(background = false) {
+  const requested = currentSession;
   try {
-    state = await api("/state");
+    const result = await api("/state");
+    if (requested !== currentSession) return false;
+    state = result;
     $("#model").textContent = state.configured
       ? `DeepSeek · ${state.model}`
       : "DeepSeek 尚未配置";
@@ -77,9 +86,65 @@ async function refresh(background = false) {
       : '<div class="banner">还没有配置 DeepSeek API Key。你可以先上传资料、设置提醒；AI 对话需在服务器 .env 填写 Key 后重启。</div>';
     renderDue();
     if (!background) render();
+    return true;
   } catch (e) {
+    if (requested !== currentSession) return false;
+    if (!switching && e.status === 404 && requested !== 1) {
+      currentSession = 1;
+      sessionStorage.removeItem("study.session");
+      return refresh(background);
+    }
     toast(e.message);
+    return false;
   }
+}
+
+async function switchSession(id) {
+  if (busy || switching || id === currentSession) return;
+  switching = true;
+  const previous = currentSession;
+  sessionDrafts.set(previous, draft);
+  currentSession = id;
+  $("#view").inert = true;
+  renderWorkspace();
+  const success = await refresh(true);
+  if (success) {
+    sessionStorage.setItem("study.session", String(id));
+    draft = sessionDrafts.get(id) || "";
+    chatError = "";
+    page = "chat";
+  } else {
+    currentSession = previous;
+  }
+  switching = false;
+  $("#view").inert = false;
+  render();
+}
+
+function renderWorkspace() {
+  const host = $("#workspacePicker");
+  if (!state.sessions?.length) return;
+  const current = state.sessions.find(item => item.id === state.session_id);
+  const groups = new Map();
+  for (const session of state.sessions) {
+    if (!groups.has(session.course_id)) groups.set(session.course_id, []);
+    groups.get(session.course_id).push(session);
+  }
+  const disabled = busy || switching ? "disabled" : "";
+  const options = Array.from(groups.values(), sessions =>
+    `<optgroup label="${esc(sessions[0].course_title)}">${sessions.map(item =>
+      `<option value="${item.id}" ${item.id === currentSession ? "selected" : ""}>${esc(item.course_title)} / ${esc(item.title)}</option>`
+    ).join("")}</optgroup>`
+  ).join("");
+  host.innerHTML = `<div class="workspace-current"><label for="sessionPicker">课程与会话</label>
+    <select id="sessionPicker" ${disabled}>${options}</select></div>
+    <div class="workspace-actions">
+      <button class="outline small" data-workspace="courses" ${disabled}>＋ 课程</button>
+      <button class="outline small" data-workspace="sessions" ${disabled}>＋ 会话</button>
+      <button class="soft small" data-workspace="qq" ${disabled || (current?.id === state.qq_session_id ? "disabled" : "")}>
+      ${current?.id === state.qq_session_id ? "QQ 正在使用" : "在 QQ 继续此会话"}</button>
+    </div>`;
+  $("#sessionPicker").onchange = (event) => switchSession(Number(event.target.value));
 }
 function renderDue() {
   const due = (state.reminders || []).filter((x) => x.status === "due");
@@ -93,6 +158,7 @@ function renderDue() {
 function render() {
   if (!state.documents) return;
   state.tasks = state.tasks || [];
+  renderWorkspace();
   $("#heading").textContent = pages[page][2];
   $("#nav").innerHTML = Object.entries(pages)
     .map(
@@ -230,7 +296,7 @@ function renderChat(view) {
   const messages = history.map(m => chatMessage(m.role, m.content, m.created)).join("");
   view.innerHTML = `<div class="workspace">
     <section class="conversation" aria-label="学习对话">
-      <div class="chat-head"><div><strong>学习对话</strong><p>网页与 QQ 共用近期对话和学习进度</p></div><span class="connection">● ${state.configured ? "已配置模型" : "未配置模型"}</span></div>
+        <div class="chat-head"><div><strong>学习对话</strong><p>资料与进度按课程保存，聊天按会话保存</p></div><span class="connection">● ${state.configured ? "已配置模型" : "未配置模型"}</span></div>
       <div id="chatbox" class="chatbox" role="log">
         ${messages || (live ? "" : `<div class="welcome"><div class="spark">✦</div><h2>今天想学什么？</h2><p>选一份资料开始连学，也可以先问一个具体问题。</p>
         <div class="chips"><button class="soft" data-prompt="请列出我的资料">列出我的资料</button><button class="outline" data-page="library">上传资料</button></div></div>`)}
@@ -286,7 +352,7 @@ function renderLive() {
 
 async function send(e) {
   e.preventDefault();
-  if (busy) return;
+  if (busy || switching) return;
   const text = $("#chatInput")?.value.trim();
   if (!text) return;
   busy = true;
@@ -296,7 +362,7 @@ async function send(e) {
   render();
   try {
     const response = await fetch("/api/chat/stream", {
-      method: "POST", headers: {"Content-Type": "application/json"},
+      method: "POST", headers: {"Content-Type": "application/json", "X-Study-Session": String(currentSession)},
       body: JSON.stringify({text}),
     });
     if (!response.ok || !response.body) throw Error(`无法开始处理（${response.status}）`);
@@ -334,6 +400,24 @@ async function send(e) {
 document.addEventListener("click", async (e) => {
   const el = e.target.closest("button");
   if (!el) return;
+  if (el.dataset.workspace) {
+    if (busy || switching) return;
+    workspaceKind = el.dataset.workspace;
+    if (workspaceKind === "qq") {
+      await action(() => api("/workspace/qq", "POST"), "QQ 已切换到当前会话");
+    } else {
+      const course = workspaceKind === "courses";
+      $("#workspaceForm").reset();
+      $("#workspaceError").textContent = "";
+      $("#workspaceDialogTitle").textContent = course ? "新建课程" : "新建会话";
+      $("#workspaceDialogHint").textContent = course
+        ? "为这门课建立独立资料、任务和错题空间。"
+        : "新会话保留独立聊天记录，继续使用当前课程的资料和进度。";
+      $("#workspaceDialog").showModal();
+      $("#workspaceTitle").focus();
+    }
+    return;
+  }
   if (el.dataset.page) {
     page = el.dataset.page;
     render();
@@ -414,6 +498,22 @@ document.addEventListener("click", async (e) => {
   }
 });
 $("#refresh").onclick = () => refresh();
+$("#workspaceCancel").onclick = () => $("#workspaceDialog").close();
+$("#workspaceForm").onsubmit = async (event) => {
+  event.preventDefault();
+  const title = $("#workspaceTitle").value.trim();
+  if (!title) return;
+  $("#workspaceSubmit").disabled = true;
+  try {
+    const result = await api("/" + workspaceKind, "POST", { title });
+    $("#workspaceDialog").close();
+    await switchSession(result.session_id);
+  } catch (error) {
+    $("#workspaceError").textContent = error.message;
+  } finally {
+    $("#workspaceSubmit").disabled = false;
+  }
+};
 $("#closeDialog").onclick = () => $("#documentDialog").close();
 refresh();
 setInterval(() => refresh(true), 10000);

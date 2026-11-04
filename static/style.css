@@ -379,6 +379,24 @@ dialog pre {
   gap: 20px;
   align-items: start;
 }
+.workspace-picker {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 16px;
+  margin-bottom: 16px;
+  padding: 11px 14px;
+  background: var(--paper);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+.workspace-picker:empty { display: none; }
+.workspace-current { flex: 1 1 240px; min-width: 0; }
+.workspace-current label { color: var(--muted); font-size: 12px; }
+.workspace-current select { padding: 6px 9px; }
+.workspace-actions { display: flex; flex-wrap: wrap; gap: 6px; padding-bottom: 2px; }
+#workspaceDialog { width: min(460px, calc(100% - 24px)); }
+#workspaceForm .row { margin-top: 14px; justify-content: flex-end; }
 .conversation {
   min-width: 0;
   background: var(--paper);
@@ -408,7 +426,7 @@ dialog pre {
 }
 .conversation .chatbox {
   padding: 24px;
-  height: clamp(270px, calc(100dvh - 415px), 650px);
+  height: clamp(260px, calc(100dvh - 495px), 650px);
   max-height: none;
   overflow: auto;
   background: linear-gradient(180deg, #f8fbf9 0%, #fff 90%);

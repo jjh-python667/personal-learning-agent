@@ -4,7 +4,9 @@ import base64
 import io
 import json
 import os
+import re
 import secrets
+import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -50,7 +52,21 @@ async def protect(request: Request, call_next):
         origin = request.headers.get('origin')
         if request.headers.get('sec-fetch-site') == 'cross-site' or (origin and origin != str(request.base_url).rstrip('/')):
             return JSONResponse({'detail':'拒绝跨站写入请求'}, status_code=403)
-    response = await call_next(request)
+    token = None
+    if request.url.path.startswith('/api/'):
+        qq = request.headers.get('x-study-channel') == 'qq'
+        raw = str(db.qq_session_id()) if qq else request.headers.get('x-study-session', '1')
+        if not re.fullmatch(r'[1-9][0-9]{0,17}', raw):
+            return JSONResponse({'detail': '会话编号无效'}, status_code=400)
+        session = db.get_session(int(raw))
+        if session is None:
+            return JSONResponse({'detail': '会话不存在'}, status_code=404)
+        token = db.workspace_scope.set((session['course_id'], session['id']))
+    try:
+        response = await call_next(request)
+    finally:
+        if token is not None:
+            db.workspace_scope.reset(token)
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Cache-Control'] = 'no-store'
@@ -58,6 +74,9 @@ async def protect(request: Request, call_next):
 
 class ChatInput(BaseModel):
     text: str = Field(min_length=1, max_length=14000)
+
+class WorkspaceTitle(BaseModel):
+    title: str = Field(min_length=1, max_length=60)
 
 class DocumentInput(BaseModel):
     title: str = Field(min_length=1, max_length=120)
@@ -80,28 +99,77 @@ class QuizAnswer(BaseModel):
 def home():
     return FileResponse(ROOT / 'static' / 'index.html')
 
+@app.post('/api/courses')
+def create_course(body: WorkspaceTitle):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, '请输入课程名称')
+    try:
+        return {'session_id': db.create_course(title)}
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, '课程名称已存在')
+
+
+@app.post('/api/sessions')
+def create_session(body: WorkspaceTitle):
+    title = body.title.strip()
+    if not title:
+        raise HTTPException(400, '请输入会话名称')
+    try:
+        sid = db.execute('INSERT INTO study_sessions(course_id,title) VALUES(?,?)', (db.course_id(), title))
+    except sqlite3.IntegrityError:
+        raise HTTPException(409, '这个课程已有同名会话')
+    return {'session_id': sid}
+
+
+@app.post('/api/workspace/qq')
+def use_session_in_qq():
+    db.set_qq_session(db.session_id())
+    return {'session_id': db.session_id()}
+
+
 @app.get('/api/state')
 def state():
-    db.execute("UPDATE reminders SET status='due' WHERE status='pending' AND due<=?", (db.now(),))
+    cid = db.course_id()
+    sid = db.session_id()
+    db.execute("UPDATE reminders SET status='due' WHERE course_id=? AND status='pending' AND due<=?", (cid, db.now()))
     documents = []
-    for doc in db.rows('SELECT * FROM documents ORDER BY id DESC'):
+    for doc in db.rows('SELECT * FROM documents WHERE course_id=? ORDER BY id DESC', (cid,)):
         pages = json.loads(doc.pop('pages'))
         documents.append({**doc,'page_count':len(pages),'characters':sum(map(len,pages))})
-    quizzes = db.rows('SELECT * FROM quizzes ORDER BY id DESC LIMIT 100')
+    quizzes = db.rows('SELECT * FROM quizzes WHERE course_id=? ORDER BY id DESC LIMIT 100', (cid,))
     for quiz in quizzes:
         if quiz['answer'] is None:
             quiz.pop('expected')
         quiz['sources'] = [{'document_id':s['document_id'],'title':s['title'],'page':s['page'],'location_kind':s.get('location_kind','page')} for s in json.loads(quiz['sources'])]
     import lesson
     return {'configured':bool(os.environ.get('DEEPSEEK_API_KEY')), 'model':os.environ.get('DEEPSEEK_MODEL','deepseek-flash'),
-            'documents':documents,'messages':db.rows('SELECT * FROM messages ORDER BY id DESC LIMIT 100')[::-1],
-            'memories':db.rows('SELECT * FROM memories ORDER BY id DESC LIMIT 100'),
-            'reminders':db.rows('SELECT * FROM reminders ORDER BY due DESC LIMIT 100'), 'quizzes':quizzes,
-            'runs':db.rows('SELECT * FROM runs ORDER BY id DESC LIMIT 20'), 'tasks': lesson.tasks_for_state(),
+            'documents':documents,'messages':db.rows('SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 100', (sid,))[::-1],
+            'memories':db.rows('SELECT * FROM memories WHERE course_id=? ORDER BY id DESC LIMIT 100', (cid,)),
+            'reminders':db.rows('SELECT * FROM reminders WHERE course_id=? ORDER BY due DESC LIMIT 100', (cid,)), 'quizzes':quizzes,
+            'runs':db.rows('SELECT * FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 20', (sid,)), 'tasks': lesson.tasks_for_state(),
+            'sessions': db.list_sessions(), 'session_id': sid, 'qq_session_id': db.qq_session_id(),
             'now':db.now()}
 
 @app.post('/api/chat')
-async def chat(body: ChatInput):
+async def chat(body: ChatInput, request: Request):
+    if request.headers.get('x-study-channel') == 'qq':
+        text = body.text.strip()
+        if text in ('列出会话', '查看会话'):
+            lines = [f"#{s['id']} · {s['course_title']} / {s['title']}"
+                     for s in db.list_sessions()]
+            reply = f"当前会话 #{db.session_id()}。发「切换会话 编号」可切换。\n" + '\n'.join(lines)
+            return {'reply': reply, 'replies': agent.split_reply(reply), 'trace': []}
+        match = re.fullmatch(r'切换会话\s*#?\s*([1-9][0-9]{0,17})', text)
+        if match:
+            sid = int(match.group(1))
+            session = next((s for s in db.list_sessions() if s['id'] == sid), None)
+            if session is None:
+                reply = '会话不存在。发「列出会话」查看可用编号。'
+            else:
+                db.set_qq_session(sid)
+                reply = f"已切换到 {session['course_title']} / {session['title']}。接下来可以提问或继续学习。"
+            return {'reply': reply, 'replies': agent.split_reply(reply), 'trace': []}
     try:
         return await agent.chat(body.text)
     except agent.ModelError as exc:
@@ -202,22 +270,22 @@ async def upload(file: UploadFile = File(...)):
 
 @app.get('/api/documents/{doc_id}')
 def read_document(doc_id:int):
-    found = db.rows('SELECT * FROM documents WHERE id=?',(doc_id,))
+    found = db.rows('SELECT * FROM documents WHERE id=? AND course_id=?',(doc_id,db.course_id()))
     if not found:
         raise HTTPException(404,'资料不存在')
     return {**found[0],'pages':json.loads(found[0]['pages'])}
 
 @app.delete('/api/documents/{doc_id}')
 def delete_document(doc_id:int):
-    db.execute('DELETE FROM documents WHERE id=?',(doc_id,))
+    db.execute('DELETE FROM documents WHERE id=? AND course_id=?',(doc_id,db.course_id()))
     return {'ok':True}
 
 @app.post('/api/memories/{mid}')
 def progress(mid:int, body:ProgressAction):
     if body.action=='delete':
-        db.execute('DELETE FROM memories WHERE id=?',(mid,))
+        db.execute('DELETE FROM memories WHERE id=? AND course_id=?',(mid,db.course_id()))
     else:
-        db.execute("UPDATE memories SET status=? WHERE id=? AND status='pending'", ('confirmed' if body.action=='confirm' else 'rejected',mid))
+        db.execute("UPDATE memories SET status=? WHERE id=? AND course_id=? AND status='pending'", ('confirmed' if body.action=='confirm' else 'rejected',mid,db.course_id()))
     return {'ok':True}
 
 @app.post('/api/reminders')
@@ -229,7 +297,7 @@ def remind(body:ReminderInput):
 
 @app.post('/api/reminders/{rid}')
 def update_reminder(rid:int,body:ReminderAction):
-    db.execute("UPDATE reminders SET status=? WHERE id=? AND status IN ('pending','due')",(body.action,rid))
+    db.execute("UPDATE reminders SET status=? WHERE id=? AND course_id=? AND status IN ('pending','due')",(body.action,rid,db.course_id()))
     return {'ok':True}
 
 @app.post('/api/quizzes/{qid}/answer')
@@ -247,7 +315,7 @@ async def skip_quiz(qid:int):
     async with agent.LOCK:
         import lesson
         with db.connection() as con:
-            updated = con.execute("UPDATE quizzes SET answer='（跳过）',explanation='已跳过，未计入错题' WHERE id=? AND answer IS NULL",(qid,))
+            updated = con.execute("UPDATE quizzes SET answer='（跳过）',explanation='已跳过，未计入错题' WHERE id=? AND course_id=? AND answer IS NULL",(qid,db.course_id()))
             if updated.rowcount:
                 lesson.resolve_task_quiz(con, qid, skipped=True)
     return {'ok':True}
