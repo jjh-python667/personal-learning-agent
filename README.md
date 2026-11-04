@@ -131,4 +131,4 @@ API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型
 
 参考了 [DeepSeek Super-agent 原型](https://github.com/deepseek-ai/dsh-superagent-prototype) 的任务状态、持久记录与执行证据设计；本项目没有引入其源码，也没有实现多执行器或 GitHub 工单系统。模型接口参考 [DeepSeek 文档](https://api-docs.deepseek.com/)，QQ 接入使用 [腾讯官方 botpy SDK](https://github.com/tencent-connect/botpy)。
 
-版本记录见 [CHANGELOG](CHANGELOG.md)。欢迎反馈问题；这个仓库首先是一个学习与复盘项目。
+版本变更见 [CHANGELOG](CHANGELOG.md)。每版为什么改、碰到了什么问题、怎么验证，见 [开发日志](docs/DEV_LOG.md)。具体代码改动可从 GitHub 的提交记录和版本标签对照查看。
