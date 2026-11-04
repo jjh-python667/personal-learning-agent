@@ -33,21 +33,25 @@ class Client(botpy.Client):
         text = (message.content or '').strip()
         try:
             if message.attachments:
-                reply = '第一版的QQ通道支持文字。PDF、Word等文件请先从管理网页上传，随后可在QQ里引用资料提问。'
+                replies = ['PDF、Word 等文件请先从管理网页上传。', '上传后在 QQ 告诉我资料编号，就能接着学习。']
             elif not text:
-                reply = '请发送文字消息。'
+                replies = ['请发送文字消息。']
             else:
                 async with httpx.AsyncClient(timeout=700) as client:
                     response = await client.post('http://127.0.0.1:8000/api/chat',json={'text':text},
                         auth=('qq-bridge',os.environ['APP_PASSWORD']))
                 if response.status_code!=200:
-                    reply = '这次处理没有成功，请在管理网页查看任务记录。'
+                    replies = ['这次处理没有成功，请在管理网页查看任务记录。']
                 else:
-                    reply = response.json()['reply']
-            if len(reply)>1800:
-                reply = reply[:1740]+'\n（回答较长，完整内容请在管理网页查看。）'
-            db.execute('UPDATE receipts SET state=?,reply=? WHERE id=?',('ready',reply,msgid))
-            await message.reply(content=reply,msg_type=0)
+                    payload = response.json()
+                    replies = payload.get('replies') or [payload['reply']]
+            db.execute('UPDATE receipts SET state=?,reply=? WHERE id=?',('ready','\n\n'.join(replies),msgid))
+            for seq, part in enumerate(replies[:3], start=1):
+                if seq > 1:
+                    await asyncio.sleep(0.8)
+                if len(part) > 1800:
+                    part = part[:1740]+'\n（回答较长，完整内容请在管理网页查看。）'
+                await message.reply(content=part, msg_type=0, msg_seq=seq)
             db.execute('UPDATE receipts SET state=? WHERE id=?',('sent',msgid))
         except Exception as exc:
             db.execute('UPDATE receipts SET state=? WHERE id=?',('failed',msgid))

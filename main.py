@@ -10,7 +10,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -108,6 +108,54 @@ async def chat(body: ChatInput):
         raise HTTPException(502,str(exc))
     except Exception:
         raise HTTPException(500,'本次任务异常停止。已经完成的保存操作仍有效，请查看执行记录后再试。')
+
+_chat_stream_jobs = set()
+
+
+@app.post('/api/chat/stream')
+async def chat_stream(body: ChatInput):
+    events = asyncio.Queue()
+
+    async def run():
+        sent = 0
+
+        def publish(event):
+            nonlocal sent
+            if event['type'] == 'message':
+                sent += 1
+            events.put_nowait(event)
+
+        try:
+            result = await agent.chat(body.text, emit=publish)
+            for part in result['replies'][sent:]:
+                if sent:
+                    await asyncio.sleep(0.65)
+                publish({'type': 'message', 'text': part})
+            events.put_nowait({'type': 'done', **result})
+        except agent.ModelError as exc:
+            events.put_nowait({'type': 'error', 'text': str(exc)})
+        except Exception:
+            events.put_nowait({'type': 'error', 'text': '处理已停止，请查看执行记录。已保存的步骤仍有效。'})
+
+    job = asyncio.create_task(run())
+    # 客户端断线时保留已开始的请求，避免保存操作只执行一半。
+    _chat_stream_jobs.add(job)
+    job.add_done_callback(_chat_stream_jobs.discard)
+
+    async def stream():
+        yield db.encode({'type': 'progress', 'text': '等待处理'}) + '\n'
+        while True:
+            try:
+                event = await asyncio.wait_for(events.get(), timeout=15)
+            except asyncio.TimeoutError:
+                yield '\n'
+                continue
+            yield db.encode(event) + '\n'
+            if event['type'] in ('done', 'error'):
+                break
+
+    return StreamingResponse(stream(), media_type='application/x-ndjson')
+
 
 @app.post('/api/documents')
 def add_text(body: DocumentInput):

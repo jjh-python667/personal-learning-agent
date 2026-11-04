@@ -38,6 +38,28 @@ def init():
         CREATE TABLE IF NOT EXISTS quizzes(id INTEGER PRIMARY KEY, question TEXT, expected TEXT, sources TEXT, answer TEXT, correct INTEGER, explanation TEXT, created TEXT);
         CREATE TABLE IF NOT EXISTS runs(id INTEGER PRIMARY KEY, request TEXT, status TEXT, trace TEXT DEFAULT '[]', created TEXT);
         CREATE TABLE IF NOT EXISTS receipts(id TEXT PRIMARY KEY, state TEXT, reply TEXT);
+        CREATE TABLE IF NOT EXISTS document_revision(
+          id INTEGER PRIMARY KEY CHECK(id=1), revision INTEGER NOT NULL
+        );
+        INSERT OR IGNORE INTO document_revision(id,revision) VALUES(1,0);
+        CREATE TABLE IF NOT EXISTS document_search_cache(
+          id INTEGER PRIMARY KEY, query TEXT NOT NULL UNIQUE, result TEXT NOT NULL
+        );
+        CREATE TRIGGER IF NOT EXISTS invalidate_search_on_insert AFTER INSERT ON documents
+        BEGIN
+          UPDATE document_revision SET revision=revision+1 WHERE id=1;
+          DELETE FROM document_search_cache;
+        END;
+        CREATE TRIGGER IF NOT EXISTS invalidate_search_on_update AFTER UPDATE ON documents
+        BEGIN
+          UPDATE document_revision SET revision=revision+1 WHERE id=1;
+          DELETE FROM document_search_cache;
+        END;
+        CREATE TRIGGER IF NOT EXISTS invalidate_search_on_delete AFTER DELETE ON documents
+        BEGIN
+          UPDATE document_revision SET revision=revision+1 WHERE id=1;
+          DELETE FROM document_search_cache;
+        END;
         CREATE TABLE IF NOT EXISTS learning_tasks(
           id INTEGER PRIMARY KEY,
           title TEXT,
@@ -82,13 +104,42 @@ def add_document(title, pages, location_kind='page'):
     return execute('INSERT INTO documents(title,pages,created,location_kind) VALUES(?,?,?,?)', (title, encode(pages), now(), location_kind))
 
 def sources(query):
+    return cached_sources(query)[0]
+
+
+def cached_sources(query):
+    """复用同一资料版本的检索结果，最多保留最近写入的 128 条。"""
+    key = query.strip().lower()
+    with connection() as con:
+        con.execute('BEGIN')
+        cached = con.execute('SELECT result FROM document_search_cache WHERE query=?', (key,)).fetchone()
+        if cached is not None:
+            return json.loads(cached['result']), True
+        revision = con.execute('SELECT revision FROM document_revision WHERE id=1').fetchone()['revision']
+        documents = con.execute('SELECT * FROM documents ORDER BY id DESC').fetchall()
+
+    result = _rank_sources(key, documents)
+    # 扫描资料期间若有上传或删除，不把旧结果写回新资料库。
+    with connection() as con:
+        inserted = con.execute(
+            'INSERT OR IGNORE INTO document_search_cache(query,result) '
+            'SELECT ?,? FROM document_revision WHERE id=1 AND revision=?',
+            (key, encode(result), revision),
+        )
+        if inserted.rowcount:
+            con.execute('DELETE FROM document_search_cache WHERE id IN ('
+                        'SELECT id FROM document_search_cache ORDER BY id DESC LIMIT -1 OFFSET 128)')
+    return result, False
+
+
+def _rank_sources(query, documents):
     """用关键词找资料；中文还会拆成相邻的两个字来匹配。不是向量检索。"""
     import re
     terms = set(re.findall(r'[a-z0-9_]{2,}|[\u4e00-\u9fff]', query.lower()))
     for word in re.findall(r'[\u4e00-\u9fff]+', query):
         terms.update(word[i:i+2] for i in range(len(word)-1))
     hits = []
-    for doc in rows('SELECT * FROM documents ORDER BY id DESC'):
+    for doc in documents:
         for page, content in enumerate(json.loads(doc['pages']), 1):
             for offset in range(0, len(content), 1000):
                 chunk = content[offset:offset+1200]

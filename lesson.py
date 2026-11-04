@@ -68,7 +68,7 @@ def parse_start_intent(text):
     if not re.search(r'带我学完|学完|开始学|带我学习|开始学习', normalized):
         return None
     m = re.search(
-        r'(?:带我学完|学完|开始学|带我学习|开始学习).{0,24}'
+        r'(?:带我学完|学完|开始学|带我学习|开始学习).{0,24}?'
         r'(?:资料)?(?:编号|#)?(?P<id>\d+)'
         r'(?:的)?(?:PDF|pdf|Word|word|docx|资料|文档)?'
         r'(?:.{0,12}(?:每次|每轮)(?P<n>[一二两三四五六七八九十\d]+)(?:页|片段))?',
@@ -85,7 +85,9 @@ def parse_start_intent(text):
         pages_per_turn = int(digits) if digits else 2
     pages_per_turn = max(1, min(pages_per_turn, 10))
     quiz = not re.search(r'不出题|不要出题|跳过题目', normalized)
-    return {'document_id': doc_id, 'pages_per_turn': pages_per_turn, 'quiz_each_chunk': quiz, 'goal_text': text}
+    return {'document_id': doc_id, 'pages_per_turn': pages_per_turn, 'quiz_each_chunk': quiz,
+            'auto_continue': quiz and ('连学' in normalized or '自动继续' in normalized),
+            'goal_text': text}
 
 
 def parse_control_intent(text):
@@ -110,12 +112,13 @@ def parse_control_intent(text):
     return None
 
 
-def start_task(document_id, pages_per_turn=2, quiz_each_chunk=True, goal_text=''):
+def start_task(document_id, pages_per_turn=2, quiz_each_chunk=True, goal_text='', auto_continue=False):
     doc, pages = _document(document_id)
     if not pages:
         raise LessonError('资料没有可学习的内容。')
     title = f"学完「{doc['title']}」·每次{pages_per_turn}{_unit(doc['location_kind'])}"
-    goal = db.encode({'goal_text': goal_text, 'total_pages': len(pages), 'location_kind': doc['location_kind']})
+    goal = db.encode({'goal_text': goal_text, 'total_pages': len(pages), 'location_kind': doc['location_kind'],
+                      'auto_continue': bool(auto_continue and quiz_each_chunk)})
     tid = db.create_task(
         title=title,
         document_id=document_id,
@@ -495,7 +498,11 @@ async def handle_answer_for_task(task_id, answer):
     return {'ok': True, 'grade': grade, 'task': task, 'reused': False}
 
 
-def format_grade_reply(result):
+def continues_after_answer(task):
+    return bool(json.loads(task['goal_json'] or '{}').get('auto_continue'))
+
+
+def format_grade_reply(result, continuing=False):
     grade = result.get('grade') or {}
     task = result['task']
     unit = _unit(_goal_kind(task))
@@ -507,7 +514,7 @@ def format_grade_reply(result):
     ]
     if task['status'] == STATUS_COMPLETED:
         lines.append(f"\n任务 #{task['id']} 已完成（覆盖到第{task['covered_through']}{unit}）。")
-    else:
+    elif not continuing:
         lines.append(f"\n任务 #{task['id']} 可继续：下一窗从第{task['cursor_page']}{unit}开始。回复「继续」进入下一块。")
     return '\n'.join(lines)
 
@@ -523,5 +530,6 @@ def tasks_for_state():
             **_task_summary(t),
             'document_title': title,
             'location_kind': location_kind,
+            'auto_continue': continues_after_answer(t),
         })
     return out

@@ -17,6 +17,9 @@ const esc = (s) =>
 let state = {},
   page = "chat",
   busy = false;
+let draft = "";
+let live = null;
+let chatError = "";
 const pages = {
   chat: ["✦", "学习对话", "一起学点什么？"],
   tasks: ["▷", "学习任务", "页窗推进与暂停继续"],
@@ -99,32 +102,7 @@ function render() {
     .join("");
   const view = $("#view");
   if (page === "chat") {
-    view.innerHTML = `<div class="grid"><div class="card"><span class="metric-icon">▤</span><div class="metric-label">已保存资料</div><div class="metric">${state.documents.length}<small class="subtle"> 份</small></div></div><div class="card"><span class="metric-icon">◷</span><div class="metric-label">已确认学习记录</div><div class="metric">${state.memories.filter((x) => x.status === "confirmed").length}<small class="subtle"> 条</small></div></div><div class="card"><span class="metric-icon">✓</span><div class="metric-label">待复习错题</div><div class="metric">${state.quizzes.filter((x) => x.correct === 0).length}<small class="subtle"> 道</small></div></div></div>${
-      (state.tasks || []).filter((t) =>
-        ["active", "waiting_answer", "paused"].includes(t.status),
-      ).length
-        ? `<div class="card"><div class="row spread"><strong>学习任务</strong><button class="soft small" data-page="tasks">全部</button></div>${(
-            state.tasks || []
-          )
-            .filter((t) =>
-              ["active", "waiting_answer", "paused"].includes(t.status),
-            )
-            .slice(0, 3)
-            .map(
-              (t) =>
-                `<div class="row spread" style="margin-top:8px"><span class="subtle">#${t.id} · 已覆盖${t.covered_through} · ${{ active: "进行中", waiting_answer: "待答题", paused: "暂停" }[t.status]}</span><span class="row">${t.status !== "paused" ? `<button class="outline small" data-action="pauseTask" data-id="${t.id}">暂停</button>` : ""}<button class="soft small" data-action="resumeTask" data-id="${t.id}">继续</button></span></div>`,
-            )
-            .join("")}</div>`
-        : ""
-    }<div class="card"><div id="chatbox" class="chatbox">${state.messages.length ? state.messages.map((m) => `<div class="bubble ${m.role}"><div class="who">${m.role === "user" ? "你" : "学习搭子"} · ${fmt(m.created)}</div>${esc(m.content)}</div>`).join("") : `<div class="welcome"><div class="spark">✦</div><h2>从一个问题，或一份资料开始。</h2><div class="subtle">一起拆解概念、练一道题，也把学过的知识留住。</div><div class="chips"><button class="soft" data-prompt="列出我的学习资料">看看资料库</button><button class="soft" data-prompt="根据我的计算机网络资料出一道复习题">练一道题</button><button class="soft" data-prompt="查询我上次的学习进度">回顾学习进度</button></div></div>`}</div><form id="chatForm" class="composer"><textarea id="chatInput" placeholder="发来一个问题，或者说：保存下面这份学习资料……" maxlength="14000" required></textarea><div class="row"><span class="subtle" id="chatStatus">${busy ? "正在执行，请稍候…" : "Enter 发送 · Shift + Enter 换行"}</span><button id="send" ${busy ? "disabled" : ""}>${busy ? "处理中…" : "发送 ↗"}</button></div></form></div>`;
-    $("#chatForm").onsubmit = send;
-    $("#chatInput").onkeydown = (e) => {
-      if (e.key === "Enter" && !e.shiftKey) {
-        e.preventDefault();
-        $("#chatForm").requestSubmit();
-      }
-    };
-    $("#chatbox").scrollTop = $("#chatbox").scrollHeight;
+    renderChat(view);
   } else if (page === "tasks") {
     const statusLabel = {
       active: "进行中",
@@ -217,7 +195,10 @@ function render() {
           (r) =>
             `<div class="card"><div class="row spread"><span class="tag ${r.status === "completed" ? "good" : ""}">${{ working: "正在执行", completed: "已完成", failed: "执行失败", interrupted: "重启后中断" }[r.status] || esc(r.status)}</span><span class="subtle">${fmt(r.created)}</span></div><p class="content">${esc(r.request)}</p><div class="trace">${
               JSON.parse(r.trace)
-                .map((t) => `${t.ok ? "✓" : "×"} ${esc(t.tool)}`)
+                .map((t) => {
+                  const cache = { hit: " · 缓存命中", miss: " · 实时检索" }[t.cache] || "";
+                  return `${t.ok ? "✓" : "×"} ${esc(t.tool)}${cache}`;
+                })
                 .join(" → ") || "没有工具调用"
             }</div></div>`,
         )
@@ -234,27 +215,120 @@ async function action(fn, message) {
     toast(e.message);
   }
 }
+function chatMessage(role, content, created) {
+  const user = role === "user";
+  return `<article class="chat-turn ${user ? "outgoing" : "incoming"}">
+    <span class="avatar" aria-hidden="true">${user ? "我" : "✦"}</span>
+    <div class="turn-body"><div class="who">${user ? "你" : "学习搭子"} ${created ? `<time>${fmt(created)}</time>` : ""}</div>
+    <div class="turn-text">${esc(content)}</div></div></article>`;
+}
+
+function renderChat(view) {
+  const tasks = state.tasks.filter(t => ["active", "waiting_answer", "paused"].includes(t.status));
+  const labels = {active: "可继续", waiting_answer: "等待答题", paused: "已暂停"};
+  const history = live ? live.history : state.messages;
+  const messages = history.map(m => chatMessage(m.role, m.content, m.created)).join("");
+  view.innerHTML = `<div class="workspace">
+    <section class="conversation" aria-label="学习对话">
+      <div class="chat-head"><div><strong>学习对话</strong><p>网页与 QQ 共用近期对话和学习进度</p></div><span class="connection">● ${state.configured ? "已配置模型" : "未配置模型"}</span></div>
+      <div id="chatbox" class="chatbox" role="log">
+        ${messages || (live ? "" : `<div class="welcome"><div class="spark">✦</div><h2>今天想学什么？</h2><p>选一份资料开始连学，也可以先问一个具体问题。</p>
+        <div class="chips"><button class="soft" data-prompt="请列出我的资料">列出我的资料</button><button class="outline" data-page="library">上传资料</button></div></div>`)}
+        <div id="liveTurns"></div>
+      </div>
+      <form id="chatForm" class="composer">
+        <p id="chatError" class="chat-error" role="alert">${esc(chatError)}</p>
+        <textarea id="chatInput" aria-label="学习消息" placeholder="接着问上次的内容，或输入你的答案…" maxlength="14000" required>${esc(draft)}</textarea>
+        <div class="row spread composer-actions"><span id="chatStatus" class="subtle" role="status">Enter 发送 · Shift + Enter 换行</span><button id="send" ${busy ? "disabled" : ""}>发送 ↗</button></div>
+      </form>
+    </section>
+    <section class="study-rail" aria-label="学习工作区">
+      <div class="card rail-card"><div class="rail-label">学习工作区</div><h2>从资料开始</h2>
+        ${state.documents.length ? `<label for="studyDoc">选择资料</label><select id="studyDoc">${state.documents.map(d => `<option value="${d.id}">${esc(d.title)}</option>`).join("")}</select>
+        <button id="startStudy" class="study-start" ${busy ? "disabled" : ""}>开始连学</button><p class="subtle">每次两页或两段。答完后自动进入下一段。</p>` : `<button class="outline" data-page="library">上传第一份资料</button>`}
+      </div>
+      <div class="card rail-card"><div class="row spread"><h2>学习进度</h2><button class="outline small" data-page="tasks">查看全部</button></div>
+        ${tasks.slice(0, 4).map(t => `<div class="study-task"><strong>${esc(t.document_title || t.title)}</strong><p class="subtle">任务 #${t.id} · ${labels[t.status]} · 已覆盖 ${t.covered_through} ${locationUnit(t)}${t.auto_continue ? " · 连学" : ""}</p>
+        <div class="row"><button class="soft small" data-prompt="继续任务${t.id}" ${busy ? "disabled" : ""}>${t.status === "waiting_answer" ? "查看当前题" : "继续学习"}</button>
+        ${t.status !== "paused" ? `<button class="outline small" data-action="pauseTask" data-id="${t.id}" ${busy ? "disabled" : ""}>暂停</button>` : ""}</div></div>`).join("") || '<p class="subtle">还没有进行中的任务。</p>'}
+      </div>
+    </section>
+  </div>`;
+  $("#chatForm").onsubmit = send;
+  $("#chatInput").oninput = (e) => { draft = e.target.value; };
+  $("#chatInput").onkeydown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey && !e.isComposing && e.keyCode !== 229) {
+      e.preventDefault();
+      $("#chatForm").requestSubmit();
+    }
+  };
+  const start = $("#startStudy");
+  if (start) start.onclick = () => {
+    const id = Number($("#studyDoc").value);
+    draft = `带我学完编号${id}的资料，每次两页，讲完出一道题，开启连学`;
+    $("#chatInput").value = draft;
+    $("#chatForm").requestSubmit();
+  };
+  renderLive();
+}
+
+function renderLive() {
+  const box = $("#chatbox");
+  if (!box) return;
+  if (live) {
+    $("#liveTurns").innerHTML = chatMessage("user", live.text) +
+      live.parts.map(part => chatMessage("assistant", part)).join("") +
+      `<div class="live-status"><span class="pulse"></span>${esc(live.status)}</div>`;
+    $("#chatStatus").textContent = live.status;
+  }
+  box.scrollTop = box.scrollHeight;
+}
+
 async function send(e) {
-  e?.preventDefault();
+  e.preventDefault();
   if (busy) return;
   const text = $("#chatInput")?.value.trim();
   if (!text) return;
   busy = true;
-  $("#send").disabled = true;
-  $("#chatStatus").textContent = "正在检索与执行，请稍候…";
+  chatError = "";
+  draft = "";
+  live = {text, history: state.messages.slice(), parts: [], status: "正在连接…"};
+  render();
   try {
-    const r = await api("/chat", "POST", { text });
-    toast(r.trace.length ? `完成了 ${r.trace.length} 次工具调用` : "已回复");
-    await refresh();
-  } catch (e) {
-    toast(e.message);
-    await refresh();
-  } finally {
-    busy = false;
-    if (page === "chat") {
-      render();
-      $("#chatInput")?.focus();
+    const response = await fetch("/api/chat/stream", {
+      method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({text}),
+    });
+    if (!response.ok || !response.body) throw Error(`无法开始处理（${response.status}）`);
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "", finished = false;
+    while (true) {
+      const {done, value} = await reader.read();
+      buffer += decoder.decode(value, {stream: !done});
+      const lines = buffer.split("\n");
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.trim()) continue;
+        const event = JSON.parse(line);
+        if (event.type === "progress") live.status = event.text;
+        if (event.type === "message") live.parts.push(event.text);
+        if (event.type === "error") throw Error(event.text);
+        if (event.type === "done") finished = true;
+        renderLive();
+      }
+      if (done) break;
     }
+    if (!finished) throw Error("连接中断，请刷新查看已保存的结果。");
+  } catch (error) {
+    chatError = error.message;
+    toast(error.message);
+  } finally {
+    await refresh(true);
+    busy = false;
+    live = null;
+    render();
+    if (page === "chat") $("#chatInput")?.focus();
   }
 }
 document.addEventListener("click", async (e) => {
@@ -268,7 +342,8 @@ document.addEventListener("click", async (e) => {
   if (el.dataset.prompt) {
     page = "chat";
     render();
-    $("#chatInput").value = el.dataset.prompt;
+    draft = el.dataset.prompt;
+    $("#chatInput").value = draft;
     $("#chatInput").focus();
     return;
   }
