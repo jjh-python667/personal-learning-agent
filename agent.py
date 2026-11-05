@@ -81,7 +81,9 @@ def add_reminder(title, due):
     timestamp = timestamp.astimezone(db.TZ)
     if timestamp <= datetime.now(db.TZ):
         raise ValueError('提醒时间必须晚于当前时间。')
-    rid = db.execute('INSERT INTO reminders(title,due,created,course_id) VALUES(?,?,?,?)', (title, timestamp.isoformat(timespec='seconds'), db.now(), db.course_id()))
+    rid = db.execute(
+        'INSERT INTO reminders(title,due,created,course_id,user_id) VALUES(?,?,?,?,?)',
+        (title, timestamp.isoformat(timespec='seconds'), db.now(), db.course_id(), db.user_id()))
     return {'id': rid, 'title': title, 'due': timestamp.isoformat(), 'channel': '网页；需保持服务运行并打开页面'}
 
 async def tool(name, arguments, *, trace_entry=None):
@@ -89,14 +91,14 @@ async def tool(name, arguments, *, trace_entry=None):
         raise ValueError('未知工具')
     a = TOOLS[name][0].model_validate(arguments).model_dump()
     if name == 'list_documents':
-        return [{'id': d['id'], 'title': d['title'], 'pages': len(json.loads(d['pages'])), 'location_kind':d['location_kind']} for d in db.rows('SELECT * FROM documents WHERE course_id=?', (db.course_id(),))]
+        return [{'id': d['id'], 'title': d['title'], 'pages': len(json.loads(d['pages'])), 'location_kind':d['location_kind']} for d in db.rows('SELECT * FROM documents WHERE course_id=? AND user_id=?', (db.course_id(), db.user_id()))]
     if name == 'search_documents':
         result, hit = db.cached_sources(a['query'])
         if trace_entry is not None:
             trace_entry['cache'] = 'hit' if hit else 'miss'
         return result
     if name == 'read_document':
-        docs = db.rows('SELECT * FROM documents WHERE id=? AND course_id=?', (a['document_id'], db.course_id()))
+        docs = db.rows('SELECT * FROM documents WHERE id=? AND course_id=? AND user_id=?', (a['document_id'], db.course_id(), db.user_id()))
         if not docs:
             raise ValueError('资料不存在')
         pages = json.loads(docs[0]['pages'])
@@ -107,20 +109,20 @@ async def tool(name, arguments, *, trace_entry=None):
     if name == 'save_document':
         return {'id': db.add_document(a['title'], [a['content']]), 'status': 'saved'}
     if name == 'propose_progress':
-        mid = db.execute('INSERT INTO memories(content,created,course_id) VALUES(?,?,?)', (a['content'], db.now(), db.course_id()))
+        mid = db.execute('INSERT INTO memories(content,created,course_id,user_id) VALUES(?,?,?,?)', (a['content'], db.now(), db.course_id(), db.user_id()))
         return {'id': mid, 'status': 'pending', 'message': '需用户在网页学习记录中确认；尚未写入正式记忆'}
     if name == 'list_progress':
-        return db.rows('SELECT * FROM memories WHERE course_id=? ORDER BY id DESC LIMIT 40', (db.course_id(),))
+        return db.rows('SELECT * FROM memories WHERE course_id=? AND user_id=? ORDER BY id DESC LIMIT 40', (db.course_id(), db.user_id()))
     if name == 'create_reminder':
         return add_reminder(**a)
     if name == 'list_reminders':
-        return db.rows('SELECT * FROM reminders WHERE course_id=? ORDER BY due LIMIT 60', (db.course_id(),))
+        return db.rows('SELECT * FROM reminders WHERE course_id=? AND user_id=? ORDER BY due LIMIT 60', (db.course_id(), db.user_id()))
     if name == 'cancel_reminder':
-        db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND course_id=? AND status='pending'", (a['reminder_id'], db.course_id()))
-        return db.rows('SELECT * FROM reminders WHERE id=? AND course_id=?', (a['reminder_id'], db.course_id()))
+        db.execute("UPDATE reminders SET status='cancelled' WHERE id=? AND course_id=? AND user_id=? AND status='pending'", (a['reminder_id'], db.course_id(), db.user_id()))
+        return db.rows('SELECT * FROM reminders WHERE id=? AND course_id=? AND user_id=?', (a['reminder_id'], db.course_id(), db.user_id()))
     if name == 'start_quiz':
-        if db.rows('SELECT id FROM quizzes WHERE course_id=? AND answer IS NULL', (db.course_id(),)):
-            return {'message': '已有未完成题目，请先回答或在网页跳过当前题。', 'quiz': db.rows('SELECT id,question FROM quizzes WHERE course_id=? AND answer IS NULL ORDER BY id DESC LIMIT 1', (db.course_id(),))[0]}
+        if db.rows('SELECT id FROM quizzes WHERE course_id=? AND user_id=? AND answer IS NULL', (db.course_id(), db.user_id())):
+            return {'message': '已有未完成题目，请先回答或在网页跳过当前题。', 'quiz': db.rows('SELECT id,question FROM quizzes WHERE course_id=? AND user_id=? AND answer IS NULL ORDER BY id DESC LIMIT 1', (db.course_id(), db.user_id()))[0]}
         sources = db.sources(a['topic'])
         if not sources:
             raise ValueError('没有检索到相关资料，请先上传或保存该主题的资料。')
@@ -128,10 +130,10 @@ async def tool(name, arguments, *, trace_entry=None):
         obj = json.loads(result['content'])
         if not all(isinstance(obj.get(k), str) and obj[k].strip() for k in ('question','expected')):
             raise ValueError('出题响应格式异常，请重试')
-        qid = db.execute('INSERT INTO quizzes(question,expected,sources,created,course_id) VALUES(?,?,?,?,?)', (obj['question'][:4000],obj['expected'][:6000],db.encode(sources),db.now(),db.course_id()))
+        qid = db.execute('INSERT INTO quizzes(question,expected,sources,created,course_id,user_id) VALUES(?,?,?,?,?,?)', (obj['question'][:4000],obj['expected'][:6000],db.encode(sources),db.now(),db.course_id(),db.user_id()))
         return {'id':qid,'question':obj['question'],'sources':[{'title':s['title'],'page':s['page'],'location_kind':s.get('location_kind','page')} for s in sources]}
     if name == 'answer_quiz':
-        found = db.rows('SELECT * FROM quizzes WHERE id=? AND course_id=?', (a['quiz_id'], db.course_id()))
+        found = db.rows('SELECT * FROM quizzes WHERE id=? AND course_id=? AND user_id=?', (a['quiz_id'], db.course_id(), db.user_id()))
         if not found or found[0]['answer'] is not None:
             raise ValueError('题目不存在或已经回答过。')
         quiz = found[0]
@@ -141,7 +143,7 @@ async def tool(name, arguments, *, trace_entry=None):
             raise ValueError('批改响应格式异常，请重试')
         import lesson
         with db.connection() as con:
-            updated = con.execute('UPDATE quizzes SET answer=?,correct=?,explanation=? WHERE id=? AND course_id=? AND answer IS NULL', (a['answer'],int(obj['correct']),obj['explanation'][:6000],a['quiz_id'],db.course_id()))
+            updated = con.execute('UPDATE quizzes SET answer=?,correct=?,explanation=? WHERE id=? AND course_id=? AND user_id=? AND answer IS NULL', (a['answer'],int(obj['correct']),obj['explanation'][:6000],a['quiz_id'],db.course_id(),db.user_id()))
             if updated.rowcount != 1:
                 raise ValueError('题目已经回答过。')
             lesson.resolve_task_quiz(con, a['quiz_id'], {**obj,'expected':quiz['expected']})
@@ -192,9 +194,11 @@ def split_reply(answer):
 def _finish(rid, answer, trace, status='completed'):
     replies = answer if isinstance(answer, list) else split_reply(answer)
     with db.connection() as con:
-        con.executemany('INSERT INTO messages(role,content,created,session_id) VALUES(?,?,?,?)',
-                        [('assistant', part, db.now(), db.session_id()) for part in replies])
-        con.execute('UPDATE runs SET status=?,trace=? WHERE id=?', (status, db.encode(trace), rid))
+        con.executemany('INSERT INTO messages(role,content,created,session_id,user_id) VALUES(?,?,?,?,?)',
+                        [('assistant', part, db.now(), db.session_id(), db.user_id()) for part in replies])
+        con.execute('UPDATE runs SET status=?,trace=? WHERE id=? AND user_id=?', (status, db.encode(trace), rid, db.user_id()))
+    import guide
+    guide.note(replies, trace)
     return {'reply': '\n\n'.join(replies), 'replies': replies, 'trace': trace, 'run_id': rid}
 
 def _task_context_blurb():
@@ -208,6 +212,15 @@ def _task_context_blurb():
     return '进行中的学习任务：' + '; '.join(bits)
 
 async def chat(text, emit=None):
+    """列出资料不占智能额度；其余提问先检查次数、频率和并发。"""
+    import limits
+    if is_document_list_request(text):
+        return await _chat_locked(text, emit)
+    async with limits.turn(db.user_id()):
+        return await _chat_locked(text, emit)
+
+
+async def _chat_locked(text, emit=None):
     import lesson
 
     def progress(label):
@@ -216,16 +229,16 @@ async def chat(text, emit=None):
 
     async with LOCK:
         progress('正在读取对话和学习进度')
-        rid = db.execute('INSERT INTO runs(request,status,created,session_id) VALUES(?,?,?,?)', (text, 'working', db.now(), db.session_id()))
+        rid = db.execute('INSERT INTO runs(request,status,created,session_id,user_id) VALUES(?,?,?,?,?)', (text, 'working', db.now(), db.session_id(), db.user_id()))
         trace = []
-        history = db.rows('SELECT role,content FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 14', (db.session_id(),))[::-1]
-        memory = db.rows("SELECT content FROM memories WHERE course_id=? AND status='confirmed' ORDER BY id DESC LIMIT 25", (db.course_id(),))
-        current = db.rows('SELECT id,question FROM quizzes WHERE course_id=? AND answer IS NULL ORDER BY id DESC LIMIT 1', (db.course_id(),))
+        history = db.rows('SELECT role,content FROM messages WHERE session_id=? AND user_id=? ORDER BY id DESC LIMIT 14', (db.session_id(), db.user_id()))[::-1]
+        memory = db.rows("SELECT content FROM memories WHERE course_id=? AND user_id=? AND status='confirmed' ORDER BY id DESC LIMIT 25", (db.course_id(), db.user_id()))
+        current = db.rows('SELECT id,question FROM quizzes WHERE course_id=? AND user_id=? AND answer IS NULL ORDER BY id DESC LIMIT 1', (db.course_id(), db.user_id()))
         context = SYSTEM + '\n当前北京时间：' + db.now() + '\n已确认学习记录：' + db.encode(memory) + '\n未答题目：' + db.encode(current)
         context += '\n' + _task_context_blurb()
         messages = [{'role':'system','content':context}] + [{'role':m['role'],'content':m['content'][:6000]} for m in history]
         messages.append({'role':'user','content':text})
-        db.execute('INSERT INTO messages(role,content,created,session_id) VALUES(?,?,?,?)', ('user',text,db.now(),db.session_id()))
+        db.execute('INSERT INTO messages(role,content,created,session_id,user_id) VALUES(?,?,?,?,?)', ('user',text,db.now(),db.session_id(),db.user_id()))
         try:
             documents = await tool('list_documents', {})
             # 查资料列表直接读数据库，避免模型没查询就说没有资料。
@@ -403,9 +416,9 @@ async def chat(text, emit=None):
                     except (ValueError, TypeError, KeyError) as exc:
                         result,ok = {'error':str(exc)[:500]},False
                     trace.append({**trace_entry, 'ok': ok})
-                    db.execute('UPDATE runs SET trace=? WHERE id=?', (db.encode(trace),rid))
+                    db.execute('UPDATE runs SET trace=? WHERE id=? AND user_id=?', (db.encode(trace),rid,db.user_id()))
                     messages.append({'role':'tool','tool_call_id':call['id'],'content':db.encode(result)})
             raise ModelError('已达到8轮执行上限。已完成的保存操作仍有效，请查看页面后再继续。')
         except Exception:
-            db.execute('UPDATE runs SET status=?,trace=? WHERE id=?', ('failed',db.encode(trace),rid))
+            db.execute('UPDATE runs SET status=?,trace=? WHERE id=? AND user_id=?', ('failed',db.encode(trace),rid,db.user_id()))
             raise

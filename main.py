@@ -1,18 +1,17 @@
-"""网页入口：接收请求，检查密码，再调用资料、对话和任务模块。"""
+"""网页入口：认出是谁，再调用资料、对话和任务模块。"""
 import asyncio
-import base64
 import io
 import json
+import logging
 import os
 import re
-import secrets
 import sqlite3
 from contextlib import asynccontextmanager
 from pathlib import Path
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException, Request, UploadFile, File
-from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from pypdf import PdfReader
@@ -21,7 +20,16 @@ ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / '.env')
 import db
 import agent
+import auth
+import guide
+import limits
 from word_import import extract_docx
+
+logging.basicConfig(
+    level=os.environ.get('LOG_LEVEL', 'INFO'),
+    format='%(asctime)s %(levelname)s %(name)s %(message)s')
+logging.getLogger('httpx').setLevel(logging.WARNING)
+logging.getLogger('httpcore').setLevel(logging.WARNING)
 
 @asynccontextmanager
 async def lifespan(app):
@@ -32,45 +40,69 @@ async def lifespan(app):
 
 app = FastAPI(title='学习搭子', lifespan=lifespan, docs_url=None, redoc_url=None)
 
-@app.middleware('http')
-async def protect(request: Request, call_next):
-    # 密码和 API Key 只留在后端，不返回给网页。
-    password = os.environ.get('APP_PASSWORD', '')
-    if password:
-        try:
-            value = request.headers.get('authorization', '')
-            scheme, payload = value.split(' ', 1)
-            supplied = base64.b64decode(payload, validate=True).decode().split(':', 1)[1]
-            valid = scheme.lower() == 'basic' and secrets.compare_digest(supplied.encode(), password.encode())
-        except (ValueError, IndexError, UnicodeError):
-            valid = False
-        if not valid:
-            return Response(status_code=401, headers={'WWW-Authenticate': 'Basic realm="Study Agent", charset="UTF-8"'})
-    elif not request.client or request.client.host not in ('127.0.0.1','::1','testclient'):
-        return JSONResponse({'detail':'请先配置 APP_PASSWORD，当前只允许本机访问。'}, status_code=503)
-    if request.method not in ('GET','HEAD','OPTIONS'):
-        origin = request.headers.get('origin')
-        if request.headers.get('sec-fetch-site') == 'cross-site' or (origin and origin != str(request.base_url).rstrip('/')):
-            return JSONResponse({'detail':'拒绝跨站写入请求'}, status_code=403)
-    token = None
-    if request.url.path.startswith('/api/'):
-        qq = request.headers.get('x-study-channel') == 'qq'
-        raw = str(db.qq_session_id()) if qq else request.headers.get('x-study-session', '1')
-        if not re.fullmatch(r'[1-9][0-9]{0,17}', raw):
-            return JSONResponse({'detail': '会话编号无效'}, status_code=400)
-        session = db.get_session(int(raw))
-        if session is None:
-            return JSONResponse({'detail': '会话不存在'}, status_code=404)
-        token = db.workspace_scope.set((session['course_id'], session['id']))
-    try:
-        response = await call_next(request)
-    finally:
-        if token is not None:
-            db.workspace_scope.reset(token)
+def _secure(response):
     response.headers['X-Content-Type-Options'] = 'nosniff'
     response.headers['X-Frame-Options'] = 'DENY'
     response.headers['Cache-Control'] = 'no-store'
+    response.headers['Referrer-Policy'] = 'no-referrer'
     return response
+
+
+def _public(request: Request):
+    path = request.url.path
+    if request.method in ('GET', 'HEAD') and (
+            path in ('/', '/invite') or path.startswith('/static/') or path.startswith('/invite/')):
+        return True
+    if request.method == 'POST' and path in ('/api/auth/login', '/api/auth/redeem'):
+        return True
+    return False
+
+
+def _needs_course(path):
+    # 登录和邀请本身不碰课程；其余接口都落在当前用户自己的会话上。
+    return path.startswith('/api/') and not path.startswith('/api/auth/') and not path.startswith('/api/invites')
+
+
+@app.middleware('http')
+async def protect(request: Request, call_next):
+    # 密码、邀请码和 API Key 只留在后端。
+    if request.method not in ('GET', 'HEAD', 'OPTIONS'):
+        origin = request.headers.get('origin')
+        if request.headers.get('sec-fetch-site') == 'cross-site' or (origin and origin != str(request.base_url).rstrip('/')):
+            return _secure(JSONResponse({'detail': '拒绝跨站写入请求'}, status_code=403))
+    user_token = scope_token = auth_token = None
+    try:
+        if not _public(request):
+            user, failure = auth.identify(request)
+            if failure:
+                response = JSONResponse({'detail': failure['detail']}, status_code=failure['status'])
+                if failure.get('clear_cookie'):
+                    response.delete_cookie(auth.COOKIE, path='/')
+                return _secure(response)
+            qq = request.headers.get('x-study-channel') == 'qq'
+            if qq and user['role'] != 'admin':
+                return _secure(JSONResponse({'detail': 'QQ 只给管理员本人使用，同学请用网页。'}, status_code=403))
+            user_token = db.user_scope.set(user['id'])
+            auth_token = auth.current_user.set(user)
+            if _needs_course(request.url.path):
+                raw = str(db.qq_session_id()) if qq else request.headers.get('x-study-session')
+                if not raw:
+                    raw = str(db.default_session_id() or '')
+                if not re.fullmatch(r'[1-9][0-9]{0,17}', raw or ''):
+                    return _secure(JSONResponse({'detail': '会话编号无效'}, status_code=400))
+                session = db.get_session(int(raw))
+                if session is None:
+                    return _secure(JSONResponse({'detail': '会话不存在'}, status_code=404))
+                scope_token = db.workspace_scope.set((session['course_id'], session['id']))
+        response = await call_next(request)
+        return _secure(response)
+    finally:
+        if scope_token is not None:
+            db.workspace_scope.reset(scope_token)
+        if auth_token is not None:
+            auth.current_user.reset(auth_token)
+        if user_token is not None:
+            db.user_scope.reset(user_token)
 
 class ChatInput(BaseModel):
     text: str = Field(min_length=1, max_length=14000)
@@ -95,9 +127,96 @@ class ReminderAction(BaseModel):
 class QuizAnswer(BaseModel):
     answer: str = Field(min_length=1,max_length=5000)
 
+class LoginInput(BaseModel):
+    username: str = Field(min_length=1, max_length=40)
+    password: str = Field(min_length=1, max_length=72)
+
+class RedeemInput(BaseModel):
+    code: str = Field(min_length=4, max_length=80)
+    username: str = Field(min_length=1, max_length=40)
+    password: str = Field(min_length=1, max_length=72)
+
+class InviteInput(BaseModel):
+    hours: int = Field(ge=1, le=24 * 30)
+    max_uses: int = Field(ge=1, le=200)
+
+class OnboardInput(BaseModel):
+    choice: str = Field(pattern='^(sample|upload)$')
+
+def _require_admin():
+    if auth.current()['role'] != 'admin':
+        raise HTTPException(403, '只有管理员可以做这件事。')
+
 @app.get('/')
 def home():
     return FileResponse(ROOT / 'static' / 'index.html')
+
+@app.get('/invite')
+@app.get('/invite/{code}')
+def invite_page(code: str = ''):
+    # 生成的链接把邀请码放在 # 后面，访问日志看不到。这条路径只是打开同一页。
+    return FileResponse(ROOT / 'static' / 'index.html')
+
+@app.post('/api/auth/login')
+def login(body: LoginInput, request: Request):
+    result = auth.login(body.username, body.password)
+    if result is None:
+        raise HTTPException(401, '用户名或密码不对。')
+    if result == 'expired':
+        raise HTTPException(401, '邀请已经过期或被收回，请向管理员再要一个新链接。')
+    token = result['token']
+    response = JSONResponse({'username': result['username'], 'role': result['role']})
+    auth.attach_cookie(response, request, token)
+    return response
+
+@app.post('/api/auth/redeem')
+def redeem(body: RedeemInput, request: Request):
+    try:
+        result = auth.redeem(body.code, body.username, body.password)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    response = JSONResponse({
+        'username': result['username'], 'role': result['role'], 'session_id': result['session_id'],
+    })
+    auth.attach_cookie(response, request, result['token'])
+    return response
+
+@app.post('/api/auth/logout')
+def logout(request: Request):
+    auth.logout(request.cookies.get(auth.COOKIE, ''))
+    response = JSONResponse({'ok': True})
+    response.delete_cookie(auth.COOKIE, path='/')
+    return response
+
+@app.get('/api/auth/me')
+def me():
+    user = auth.current()
+    return {'id': user['id'], 'username': user['username'], 'role': user['role']}
+
+@app.get('/api/invites')
+def invites():
+    _require_admin()
+    return {'invites': auth.list_invites()}
+
+@app.post('/api/invites')
+def create_invite(body: InviteInput, request: Request):
+    _require_admin()
+    return auth.create_invite(body.hours, body.max_uses, request)
+
+@app.post('/api/invites/{invite_id}/revoke')
+def revoke_invite(invite_id: int):
+    _require_admin()
+    if not auth.revoke_invite(invite_id):
+        raise HTTPException(404, '没有这张邀请。')
+    return {'ok': True}
+
+@app.post('/api/onboarding')
+def onboarding(body: OnboardInput):
+    try:
+        guide.choose(body.choice)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc))
+    return {'ok': True, 'choice': body.choice}
 
 @app.post('/api/courses')
 def create_course(body: WorkspaceTitle):
@@ -116,7 +235,9 @@ def create_session(body: WorkspaceTitle):
     if not title:
         raise HTTPException(400, '请输入会话名称')
     try:
-        sid = db.execute('INSERT INTO study_sessions(course_id,title) VALUES(?,?)', (db.course_id(), title))
+        sid = db.execute(
+            'INSERT INTO study_sessions(course_id,title,user_id) VALUES(?,?,?)',
+            (db.course_id(), title, db.user_id()))
     except sqlite3.IntegrityError:
         raise HTTPException(409, '这个课程已有同名会话')
     return {'session_id': sid}
@@ -124,6 +245,7 @@ def create_session(body: WorkspaceTitle):
 
 @app.post('/api/workspace/qq')
 def use_session_in_qq():
+    _require_admin()
     db.set_qq_session(db.session_id())
     return {'session_id': db.session_id()}
 
@@ -132,23 +254,28 @@ def use_session_in_qq():
 def state():
     cid = db.course_id()
     sid = db.session_id()
-    db.execute("UPDATE reminders SET status='due' WHERE course_id=? AND status='pending' AND due<=?", (cid, db.now()))
+    uid = db.user_id()
+    db.execute("UPDATE reminders SET status='due' WHERE course_id=? AND user_id=? AND status='pending' AND due<=?", (cid, uid, db.now()))
     documents = []
-    for doc in db.rows('SELECT * FROM documents WHERE course_id=? ORDER BY id DESC', (cid,)):
+    for doc in db.rows('SELECT * FROM documents WHERE course_id=? AND user_id=? ORDER BY id DESC', (cid, uid)):
         pages = json.loads(doc.pop('pages'))
         documents.append({**doc,'page_count':len(pages),'characters':sum(map(len,pages))})
-    quizzes = db.rows('SELECT * FROM quizzes WHERE course_id=? ORDER BY id DESC LIMIT 100', (cid,))
+    quizzes = db.rows('SELECT * FROM quizzes WHERE course_id=? AND user_id=? ORDER BY id DESC LIMIT 100', (cid, uid))
     for quiz in quizzes:
         if quiz['answer'] is None:
             quiz.pop('expected')
         quiz['sources'] = [{'document_id':s['document_id'],'title':s['title'],'page':s['page'],'location_kind':s.get('location_kind','page')} for s in json.loads(quiz['sources'])]
     import lesson
+    user = auth.current()
     return {'configured':bool(os.environ.get('DEEPSEEK_API_KEY')), 'model':os.environ.get('DEEPSEEK_MODEL','deepseek-flash'),
-            'documents':documents,'messages':db.rows('SELECT * FROM messages WHERE session_id=? ORDER BY id DESC LIMIT 100', (sid,))[::-1],
-            'memories':db.rows('SELECT * FROM memories WHERE course_id=? ORDER BY id DESC LIMIT 100', (cid,)),
-            'reminders':db.rows('SELECT * FROM reminders WHERE course_id=? ORDER BY due DESC LIMIT 100', (cid,)), 'quizzes':quizzes,
-            'runs':db.rows('SELECT * FROM runs WHERE session_id=? ORDER BY id DESC LIMIT 20', (sid,)), 'tasks': lesson.tasks_for_state(),
-            'sessions': db.list_sessions(), 'session_id': sid, 'qq_session_id': db.qq_session_id(),
+            'documents':documents,'messages':db.rows('SELECT * FROM messages WHERE session_id=? AND user_id=? ORDER BY id DESC LIMIT 100', (sid, uid))[::-1],
+            'memories':db.rows('SELECT * FROM memories WHERE course_id=? AND user_id=? ORDER BY id DESC LIMIT 100', (cid, uid)),
+            'reminders':db.rows('SELECT * FROM reminders WHERE course_id=? AND user_id=? ORDER BY due DESC LIMIT 100', (cid, uid)), 'quizzes':quizzes,
+            'runs':db.rows('SELECT * FROM runs WHERE session_id=? AND user_id=? ORDER BY id DESC LIMIT 20', (sid, uid)), 'tasks': lesson.tasks_for_state(),
+            'sessions': db.list_sessions(), 'session_id': sid,
+            'qq_session_id': db.qq_session_id() if user['role'] == 'admin' else None,
+            'user': {'id': user['id'], 'username': user['username'], 'role': user['role']},
+            'onboarding': guide.view(len(documents)), 'usage': limits.snapshot(uid),
             'now':db.now()}
 
 @app.post('/api/chat')
@@ -172,6 +299,8 @@ async def chat(body: ChatInput, request: Request):
             return {'reply': reply, 'replies': agent.split_reply(reply), 'trace': []}
     try:
         return await agent.chat(body.text)
+    except limits.LimitError as exc:
+        raise HTTPException(429, str(exc))
     except agent.ModelError as exc:
         raise HTTPException(502,str(exc))
     except Exception:
@@ -200,6 +329,8 @@ async def chat_stream(body: ChatInput):
                     await asyncio.sleep(0.65)
                 publish({'type': 'message', 'text': part})
             events.put_nowait({'type': 'done', **result})
+        except limits.LimitError as exc:
+            events.put_nowait({'type': 'error', 'text': str(exc)})
         except agent.ModelError as exc:
             events.put_nowait({'type': 'error', 'text': str(exc)})
         except Exception:
@@ -231,10 +362,12 @@ def add_text(body: DocumentInput):
 
 @app.post('/api/upload')
 async def upload(file: UploadFile = File(...)):
-    data = await file.read(12*1024*1024+1)
+    limit = limits.max_upload_bytes()
+    data = await file.read(limit + 1)
     await file.close()
-    if len(data)>12*1024*1024:
-        raise HTTPException(413,'单个文件最多12MB。')
+    if len(data) > limit:
+        mb = max(1, limit // (1024 * 1024))
+        raise HTTPException(413, f'这个文件太大了（上限 {mb}MB），请换成小一点的再上传。')
     filename = Path((file.filename or '资料').replace('\\','/')).name[:120]
     location_kind = 'page'
     try:
@@ -270,22 +403,25 @@ async def upload(file: UploadFile = File(...)):
 
 @app.get('/api/documents/{doc_id}')
 def read_document(doc_id:int):
-    found = db.rows('SELECT * FROM documents WHERE id=? AND course_id=?',(doc_id,db.course_id()))
+    found = db.rows('SELECT * FROM documents WHERE id=? AND course_id=? AND user_id=?',(doc_id,db.course_id(),db.user_id()))
     if not found:
         raise HTTPException(404,'资料不存在')
     return {**found[0],'pages':json.loads(found[0]['pages'])}
 
 @app.delete('/api/documents/{doc_id}')
 def delete_document(doc_id:int):
-    db.execute('DELETE FROM documents WHERE id=? AND course_id=?',(doc_id,db.course_id()))
+    if not db.change('DELETE FROM documents WHERE id=? AND course_id=? AND user_id=?',(doc_id,db.course_id(),db.user_id())):
+        raise HTTPException(404,'资料不存在')
     return {'ok':True}
 
 @app.post('/api/memories/{mid}')
 def progress(mid:int, body:ProgressAction):
     if body.action=='delete':
-        db.execute('DELETE FROM memories WHERE id=? AND course_id=?',(mid,db.course_id()))
+        changed = db.change('DELETE FROM memories WHERE id=? AND course_id=? AND user_id=?',(mid,db.course_id(),db.user_id()))
     else:
-        db.execute("UPDATE memories SET status=? WHERE id=? AND course_id=? AND status='pending'", ('confirmed' if body.action=='confirm' else 'rejected',mid,db.course_id()))
+        changed = db.change("UPDATE memories SET status=? WHERE id=? AND course_id=? AND user_id=? AND status='pending'", ('confirmed' if body.action=='confirm' else 'rejected',mid,db.course_id(),db.user_id()))
+    if not changed:
+        raise HTTPException(404,'记录不存在')
     return {'ok':True}
 
 @app.post('/api/reminders')
@@ -297,27 +433,35 @@ def remind(body:ReminderInput):
 
 @app.post('/api/reminders/{rid}')
 def update_reminder(rid:int,body:ReminderAction):
-    db.execute("UPDATE reminders SET status=? WHERE id=? AND course_id=? AND status IN ('pending','due')",(body.action,rid,db.course_id()))
+    if not db.change("UPDATE reminders SET status=? WHERE id=? AND course_id=? AND user_id=? AND status IN ('pending','due')",(body.action,rid,db.course_id(),db.user_id())):
+        raise HTTPException(404,'提醒不存在')
     return {'ok':True}
 
 @app.post('/api/quizzes/{qid}/answer')
 async def answer_quiz(qid:int,body:QuizAnswer):
-    async with agent.LOCK:
-        try:
-            return await agent.tool('answer_quiz',{'quiz_id':qid,'answer':body.answer})
-        except agent.ModelError as exc:
-            raise HTTPException(502,str(exc))
-        except (ValueError,KeyError) as exc:
-            raise HTTPException(400,str(exc))
+    try:
+        async with limits.turn(db.user_id()):
+            async with agent.LOCK:
+                try:
+                    result = await agent.tool('answer_quiz',{'quiz_id':qid,'answer':body.answer})
+                except agent.ModelError as exc:
+                    raise HTTPException(502,str(exc))
+                except (ValueError,KeyError) as exc:
+                    raise HTTPException(400,str(exc))
+    except limits.LimitError as exc:
+        raise HTTPException(429, str(exc))
+    guide.note_event('answer_quiz')
+    return result
 
 @app.post('/api/quizzes/{qid}/skip')
 async def skip_quiz(qid:int):
     async with agent.LOCK:
         import lesson
         with db.connection() as con:
-            updated = con.execute("UPDATE quizzes SET answer='（跳过）',explanation='已跳过，未计入错题' WHERE id=? AND course_id=? AND answer IS NULL",(qid,db.course_id()))
-            if updated.rowcount:
-                lesson.resolve_task_quiz(con, qid, skipped=True)
+            updated = con.execute("UPDATE quizzes SET answer='（跳过）',explanation='已跳过，未计入错题' WHERE id=? AND course_id=? AND user_id=? AND answer IS NULL",(qid,db.course_id(),db.user_id()))
+            if not updated.rowcount:
+                raise HTTPException(404, '题目不存在或已经答过。')
+            lesson.resolve_task_quiz(con, qid, skipped=True)
     return {'ok':True}
 
 
@@ -335,20 +479,26 @@ async def pause_task(task_id: int):
 async def resume_task(task_id: int):
     """Resume: set active (or keep waiting); if active with no pending quiz, advance one chunk."""
     import lesson
-    async with agent.LOCK:
-        try:
-            result = await lesson.resume_task(task_id, advance=True)
-            reply = result.get('message')
-            return {
-                'ok': True,
-                'task': db.get_task(task_id),
-                'advanced': bool(result.get('advanced')),
-                'reply': reply,
-                'status': (result.get('advanced') or {}).get('status') or result['task']['status'],
-            }
-        except lesson.LessonError as exc:
-            raise HTTPException(400, str(exc))
-        except agent.ModelError as exc:
-            raise HTTPException(502, str(exc))
+    try:
+        async with limits.turn(db.user_id()):
+            async with agent.LOCK:
+                try:
+                    result = await lesson.resume_task(task_id, advance=True)
+                except lesson.LessonError as exc:
+                    raise HTTPException(400, str(exc))
+                except agent.ModelError as exc:
+                    raise HTTPException(502, str(exc))
+    except limits.LimitError as exc:
+        raise HTTPException(429, str(exc))
+    if result.get('advanced'):
+        guide.note_event('lesson_advance')
+    reply = result.get('message')
+    return {
+        'ok': True,
+        'task': db.get_task(task_id),
+        'advanced': bool(result.get('advanced')),
+        'reply': reply,
+        'status': (result.get('advanced') or {}).get('status') or result['task']['status'],
+    }
 
 app.mount('/static', StaticFiles(directory=ROOT/'static'), name='static')

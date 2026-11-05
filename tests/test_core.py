@@ -12,18 +12,30 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 import db
 import agent
+import limits
 from main import app
 
 class StudyTests(unittest.TestCase):
     def setUp(self):
         self.tmp=tempfile.TemporaryDirectory()
-        self.env=patch.dict(os.environ,{'STUDY_DB':str(Path(self.tmp.name)/'db.sqlite'),'APP_PASSWORD':'test-password-123456','DEEPSEEK_API_KEY':''})
+        self.env=patch.dict(os.environ,{
+            'STUDY_DB':str(Path(self.tmp.name)/'db.sqlite'),
+            'APP_PASSWORD':'test-password-123456',
+            'DEEPSEEK_API_KEY':'',
+            'AI_DAILY_QUOTA':'500',
+            'AI_MIN_INTERVAL_SECONDS':'0',
+            'AI_MAX_CONCURRENCY':'8',
+            'AI_USER_CONCURRENCY':'4',
+            'MAX_UPLOAD_BYTES':str(12*1024*1024),
+        })
         self.env.start()
+        limits.reset_runtime()
         self.client=TestClient(app)
         self.client.__enter__()
         self.client.auth=('test','test-password-123456')
     def tearDown(self):
         self.client.__exit__(None,None,None)
+        limits.reset_runtime()
         self.env.stop()
         self.tmp.cleanup()
     def test_auth_and_origin(self):

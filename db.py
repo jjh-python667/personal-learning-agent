@@ -10,6 +10,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent
 TZ = timezone(timedelta(hours=8))
 workspace_scope = ContextVar('workspace_scope', default=(1, 1))
+# 当前请求属于哪个用户。默认 1 是升级前数据归入的管理员。
+user_scope = ContextVar('user_scope', default=1)
 
 
 def course_id():
@@ -18,6 +20,10 @@ def course_id():
 
 def session_id():
     return workspace_scope.get()[1]
+
+
+def user_id():
+    return user_scope.get()
 
 def now():
     return datetime.now(TZ).isoformat(timespec='seconds')
@@ -104,6 +110,39 @@ def init():
           evidence_json TEXT,
           created TEXT
         );
+        CREATE TABLE IF NOT EXISTS users(
+          id INTEGER PRIMARY KEY,
+          username TEXT NOT NULL COLLATE NOCASE UNIQUE,
+          password_hash TEXT NOT NULL,
+          role TEXT NOT NULL DEFAULT 'member',
+          invite_id INTEGER,
+          guide_choice TEXT,
+          guide_step TEXT NOT NULL DEFAULT 'ask',
+          created TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS auth_sessions(
+          token TEXT PRIMARY KEY,
+          user_id INTEGER NOT NULL,
+          created TEXT NOT NULL,
+          expires TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS invites(
+          id INTEGER PRIMARY KEY,
+          code TEXT NOT NULL UNIQUE,
+          created_by INTEGER NOT NULL,
+          expires_at TEXT NOT NULL,
+          max_uses INTEGER NOT NULL,
+          use_count INTEGER NOT NULL DEFAULT 0,
+          revoked INTEGER NOT NULL DEFAULT 0,
+          created TEXT NOT NULL
+        );
+        CREATE TABLE IF NOT EXISTS ai_usage(
+          user_id INTEGER NOT NULL,
+          day TEXT NOT NULL,
+          count INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(user_id, day)
+        );
+        CREATE TABLE IF NOT EXISTS schema_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL);
         ''')
         con.execute('BEGIN IMMEDIATE')
         if 'location_kind' not in {r['name'] for r in con.execute('PRAGMA table_info(documents)')}:
@@ -116,23 +155,69 @@ def init():
                 if column not in {r['name'] for r in con.execute(f'PRAGMA table_info({table})')}:
                     con.execute(f'ALTER TABLE {table} ADD COLUMN {column} INTEGER NOT NULL DEFAULT 1')
                 con.execute(f'CREATE INDEX IF NOT EXISTS idx_{table}_{column} ON {table}({column},id)')
+        # 旧数据没有用户列时，默认归到管理员（用户 1）。
+        for table in ('courses', 'study_sessions', 'documents', 'messages', 'memories',
+                      'reminders', 'quizzes', 'runs', 'learning_tasks'):
+            if 'user_id' not in {r['name'] for r in con.execute(f'PRAGMA table_info({table})')}:
+                con.execute(f'ALTER TABLE {table} ADD COLUMN user_id INTEGER NOT NULL DEFAULT 1')
+            con.execute(f'CREATE INDEX IF NOT EXISTS idx_{table}_user ON {table}(user_id,id)')
+        _relax_course_uniqueness(con)
+        con.execute('CREATE INDEX IF NOT EXISTS idx_courses_user ON courses(user_id,id)')
+        con.execute("INSERT INTO schema_meta(key,value) VALUES('version','0.4.0') "
+                    "ON CONFLICT(key) DO UPDATE SET value='0.4.0'")
+    # 密码哈希放在事务外，避免和建表缠在一起。
+    from auth import ensure_admin
+    ensure_admin()
+
+
+def _relax_course_uniqueness(con):
+    """课程名只在同一个用户里唯一，同学都可以有「我的课程」。"""
+    row = con.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='courses'").fetchone()
+    sql = (row['sql'] or '').replace(' ', '')
+    if 'UNIQUE(user_id,title)' in sql:
+        con.execute('DROP TABLE IF EXISTS courses_old')
+        return
+    con.execute('ALTER TABLE courses RENAME TO courses_old')
+    con.execute('''CREATE TABLE courses(
+        id INTEGER PRIMARY KEY,
+        title TEXT NOT NULL COLLATE NOCASE,
+        user_id INTEGER NOT NULL DEFAULT 1,
+        UNIQUE(user_id, title)
+    )''')
+    con.execute('INSERT INTO courses(id,title,user_id) SELECT id,title,user_id FROM courses_old')
+    con.execute('DROP TABLE courses_old')
 
 
 def create_course(title):
     with connection() as con:
-        cid = con.execute('INSERT INTO courses(title) VALUES(?)', (title,)).lastrowid
-        sid = con.execute('INSERT INTO study_sessions(course_id,title) VALUES(?,?)', (cid,'默认会话')).lastrowid
+        cid = con.execute('INSERT INTO courses(title,user_id) VALUES(?,?)', (title, user_id())).lastrowid
+        sid = con.execute(
+            'INSERT INTO study_sessions(course_id,title,user_id) VALUES(?,?,?)',
+            (cid, '默认会话', user_id())).lastrowid
     return sid
 
 
 def get_session(sid):
-    found = rows('SELECT * FROM study_sessions WHERE id=?', (sid,))
+    found = rows(
+        'SELECT s.* FROM study_sessions s JOIN courses c ON c.id=s.course_id '
+        'WHERE s.id=? AND s.user_id=? AND c.user_id=?',
+        (sid, user_id(), user_id()))
     return found[0] if found else None
 
 
+def default_session_id():
+    found = rows(
+        'SELECT s.id FROM study_sessions s JOIN courses c ON c.id=s.course_id '
+        'WHERE s.user_id=? AND c.user_id=? ORDER BY s.id LIMIT 1',
+        (user_id(), user_id()))
+    return found[0]['id'] if found else None
+
+
 def list_sessions():
-    return rows('SELECT s.*, c.title AS course_title FROM study_sessions s '
-                'JOIN courses c ON c.id=s.course_id ORDER BY c.id,s.id')
+    return rows(
+        'SELECT s.*, c.title AS course_title FROM study_sessions s '
+        'JOIN courses c ON c.id=s.course_id WHERE s.user_id=? AND c.user_id=? ORDER BY c.id,s.id',
+        (user_id(), user_id()))
 
 
 def qq_session_id():
@@ -152,12 +237,19 @@ def execute(sql, args=()):
     with connection() as con:
         return con.execute(sql, args).lastrowid
 
+
+def change(sql, args=()):
+    """返回改动的行数，用来判断「这不是你的数据」。"""
+    with connection() as con:
+        return con.execute(sql, args).rowcount
+
 def encode(value):
     return json.dumps(value, ensure_ascii=False)
 
 def add_document(title, pages, location_kind='page'):
-    return execute('INSERT INTO documents(title,pages,created,location_kind,course_id) VALUES(?,?,?,?,?)',
-                   (title, encode(pages), now(), location_kind, course_id()))
+    return execute(
+        'INSERT INTO documents(title,pages,created,location_kind,course_id,user_id) VALUES(?,?,?,?,?,?)',
+        (title, encode(pages), now(), location_kind, course_id(), user_id()))
 
 def sources(query):
     return cached_sources(query)[0]
@@ -166,14 +258,17 @@ def sources(query):
 def cached_sources(query):
     """复用同一资料版本的检索结果，最多保留最近写入的 128 条。"""
     normalized = query.strip().lower()
-    key = encode([course_id(), normalized])
+    # 缓存键带上用户，避免猜到课程编号就能读到别人的检索结果。
+    key = encode([user_id(), course_id(), normalized])
     with connection() as con:
         con.execute('BEGIN')
         cached = con.execute('SELECT result FROM document_search_cache WHERE query=?', (key,)).fetchone()
         if cached is not None:
             return json.loads(cached['result']), True
         revision = con.execute('SELECT revision FROM document_revision WHERE id=1').fetchone()['revision']
-        documents = con.execute('SELECT * FROM documents WHERE course_id=? ORDER BY id DESC', (course_id(),)).fetchall()
+        documents = con.execute(
+            'SELECT * FROM documents WHERE course_id=? AND user_id=? ORDER BY id DESC',
+            (course_id(), user_id())).fetchall()
 
     result = _rank_sources(normalized, documents)
     # 扫描资料期间若有上传或删除，不把旧结果写回新资料库。
@@ -210,19 +305,19 @@ def _rank_sources(query, documents):
 def create_task(title, document_id, pages_per_turn=2, quiz_each_chunk=1, goal_json=None, status='active', cursor_page=1, covered_through=0):
     ts = now()
     return execute(
-        'INSERT INTO learning_tasks(title,document_id,pages_per_turn,quiz_each_chunk,status,cursor_page,covered_through,active_quiz_id,goal_json,created,updated,course_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)',
-        (title, document_id, pages_per_turn, int(bool(quiz_each_chunk)), status, cursor_page, covered_through, None, goal_json, ts, ts, course_id())
+        'INSERT INTO learning_tasks(title,document_id,pages_per_turn,quiz_each_chunk,status,cursor_page,covered_through,active_quiz_id,goal_json,created,updated,course_id,user_id) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)',
+        (title, document_id, pages_per_turn, int(bool(quiz_each_chunk)), status, cursor_page, covered_through, None, goal_json, ts, ts, course_id(), user_id())
     )
 
 def get_task(task_id):
-    found = rows('SELECT * FROM learning_tasks WHERE id=? AND course_id=?', (task_id, course_id()))
+    found = rows('SELECT * FROM learning_tasks WHERE id=? AND course_id=? AND user_id=?', (task_id, course_id(), user_id()))
     return found[0] if found else None
 
 def list_tasks(statuses=None, limit=40):
     if statuses:
         placeholders = ','.join('?' * len(statuses))
-        return rows(f'SELECT * FROM learning_tasks WHERE course_id=? AND status IN ({placeholders}) ORDER BY updated DESC LIMIT ?', (course_id(), *statuses, limit))
-    return rows('SELECT * FROM learning_tasks WHERE course_id=? ORDER BY updated DESC LIMIT ?', (course_id(), limit))
+        return rows(f'SELECT * FROM learning_tasks WHERE course_id=? AND user_id=? AND status IN ({placeholders}) ORDER BY updated DESC LIMIT ?', (course_id(), user_id(), *statuses, limit))
+    return rows('SELECT * FROM learning_tasks WHERE course_id=? AND user_id=? ORDER BY updated DESC LIMIT ?', (course_id(), user_id(), limit))
 
 def update_task(task_id, **fields):
     if not fields:
@@ -230,7 +325,7 @@ def update_task(task_id, **fields):
     fields = dict(fields)
     fields['updated'] = now()
     cols = ', '.join(f'{k}=?' for k in fields)
-    execute(f'UPDATE learning_tasks SET {cols} WHERE id=? AND course_id=?', (*fields.values(), task_id, course_id()))
+    execute(f'UPDATE learning_tasks SET {cols} WHERE id=? AND course_id=? AND user_id=?', (*fields.values(), task_id, course_id(), user_id()))
 
 def next_step_index(task_id):
     found = rows('SELECT COALESCE(MAX(step_index),0) AS m FROM task_steps WHERE task_id=?', (task_id,))
