@@ -24,7 +24,10 @@
           <span class="eyebrow">一点点积累，也是在前进</span>
           <h1 id="heading">一起学点什么？</h1>
         </div>
-        <button id="refresh" class="outline">↻ 刷新</button>
+        <div class="row">
+          <button id="logout" class="outline" hidden>退出</button>
+          <button id="refresh" class="outline">↻ 刷新</button>
+        </div>
       </header>
       <div id="notice"></div>
       <section id="workspacePicker" class="workspace-picker" aria-label="课程和会话"></section>
@@ -50,6 +53,52 @@
           <button id="workspaceSubmit" type="submit">创建</button>
         </div>
       </form>
+    </dialog>
+    <dialog id="gate">
+      <h2>学习搭子</h2>
+      <p class="subtle">同学用管理员发来的链接进入。管理员用户名是 <strong>admin</strong>，密码是服务器上的网页密码，不要发到群里。</p>
+      <p id="inviteHint" class="subtle"></p>
+      <p id="gateError" class="chat-error" role="alert"></p>
+      <form id="loginForm">
+        <label for="loginUser">用户名</label>
+        <input id="loginUser" autocomplete="username" required maxlength="40" />
+        <label for="loginPass">密码</label>
+        <input id="loginPass" type="password" autocomplete="current-password" required maxlength="72" />
+        <button type="submit">登录</button>
+      </form>
+      <form id="redeemForm" hidden>
+        <label for="redeemUser">给自己起个用户名</label>
+        <input id="redeemUser" autocomplete="username" required maxlength="20" placeholder="例如：小陈" />
+        <label for="redeemPass">自己设一个密码（至少 8 位）</label>
+        <input id="redeemPass" type="password" autocomplete="new-password" required minlength="8" maxlength="72" />
+        <button type="submit">注册并进入</button>
+        <button id="showLogin" class="outline" type="button">我已经有账号，去登录</button>
+      </form>
+      <section class="howto">
+        <h3>管理员怎么邀请</h3>
+        <ol>
+          <li>用 admin 和网页密码登录。</li>
+          <li>打开「邀请同学」，填几天后过期、能用几次，生成链接。</li>
+          <li>把链接发给同学。链接以 https:// 开头才适合在网上传。</li>
+          <li>不想让人再用，点「收回」。收回或过期后，已经进来的同学也会退出。</li>
+        </ol>
+        <h3>同学怎么试用</h3>
+        <ol>
+          <li>打开链接，自己起用户名和密码。</li>
+          <li>选「体验示例」或「上传自己的资料」。</li>
+          <li>跟着页面上的「问 → 分条 → 学 → 答 → 继续」走一遍。</li>
+          <li>用完点右上角「退出」。</li>
+        </ol>
+      </section>
+    </dialog>
+    <dialog id="startDialog">
+      <h2>第一次来，先选一种开始方式</h2>
+      <p>「体验示例」会放进两份短笔记，跟着问、分条、学、答、继续走一遍。「上传自己」就用你的资料。</p>
+      <div class="row">
+        <button id="chooseSample" type="button">体验示例</button>
+        <button id="chooseUpload" class="outline" type="button">上传自己</button>
+      </div>
+      <p id="startError" class="chat-error" role="alert"></p>
     </dialog>
     <script src="/static/app.js"></script>
   </body>

@@ -1,4 +1,5 @@
 """Official QQ SDK bridge. Separate process; owner allowlist; no proactive messages.
+网页可以邀请同学，QQ 仍然只处理 QQ_OWNER_OPENID 这一个发送者，并且只进入管理员的数据。
 Install optional dependency: pip install 'qq-botpy>=1.2,<2'
 需要自行配置官方机器人凭据；QQ 和网页使用同一个后端。
 """

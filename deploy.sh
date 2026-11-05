@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
-# Run after uploading and extracting the archive under /opt/study-agent.
+# First install: upload and extract the archive under /opt/study-agent, then run this.
+# Upgrading a server that already has data: stop both services and back up
+# data/study.sqlite3 plus .env before replacing code. See docs/DEPLOYMENT.md.
+# Do not copy a fresh tree over a live database.
 set -euo pipefail
 APP=/opt/study-agent
 if [ "$(id -u)" -ne 0 ]; then echo 'Run with sudo bash deploy.sh'; exit 1; fi

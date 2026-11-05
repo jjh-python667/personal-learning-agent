@@ -20,7 +20,8 @@ let state = {},
 let draft = "";
 let live = null;
 let chatError = "";
-let currentSession = Number(sessionStorage.getItem("study.session")) || 1;
+let currentSession = Number(sessionStorage.getItem("study.session")) || 0;
+let signedIn = false;
 let switching = false;
 let workspaceKind = "courses";
 const sessionDrafts = new Map();
@@ -49,8 +50,21 @@ function toast(message) {
     5500,
   );
 }
+function sessionHeader() {
+  return currentSession ? { "X-Study-Session": String(currentSession) } : {};
+}
+function inviteCodeFromLocation() {
+  const hash = decodeURIComponent(location.hash.replace(/^#/, ""));
+  if (hash && !hash.includes("=")) return hash;
+  return new URLSearchParams(location.search).get("invite") || "";
+}
+function maskCode(code) {
+  if (!code) return "";
+  if (code.length <= 4) return "已填邀请码";
+  return "邀请码 " + code.slice(0, 2) + "…" + code.slice(-2);
+}
 async function api(path, method = "GET", body) {
-  const opts = { method, headers: { "X-Study-Session": String(currentSession) } };
+  const opts = { method, headers: sessionHeader(), credentials: "same-origin" };
   if (body instanceof FormData) opts.body = body;
   else if (body !== undefined) {
     opts.body = JSON.stringify(body);
@@ -72,27 +86,54 @@ async function api(path, method = "GET", body) {
   }
   return response.json();
 }
-async function refresh(background = false) {
+function showGate(message) {
+  const gate = $("#gate");
+  const code = inviteCodeFromLocation();
+  $("#redeemForm").hidden = !code;
+  $("#loginForm").hidden = !!code;
+  $("#inviteHint").textContent = code ? maskCode(code) + "。设好用户名和密码就能进来。" : "";
+  if (message && message !== "请先登录。") $("#gateError").textContent = message;
+  if (!gate.open) gate.showModal();
+  $("#logout").hidden = true;
+}
+async function refresh(background = false, retried = false) {
   const requested = currentSession;
   try {
     const result = await api("/state");
     if (requested !== currentSession) return false;
     state = result;
+    signedIn = true;
+    if ($("#gate").open) $("#gate").close();
+    $("#logout").hidden = false;
+    if (state.session_id && state.session_id !== currentSession) {
+      currentSession = state.session_id;
+      sessionStorage.setItem("study.session", String(currentSession));
+    }
+    const usedUp = state.usage && state.usage.remaining === 0;
+    const quota = usedUp
+      ? '<div class="banner">今天的智能提问次数已经用完了。明天再来，或请管理员把每天的额度调高一点。</div>'
+      : "";
     $("#model").textContent = state.configured
       ? `DeepSeek · ${state.model}`
       : "DeepSeek 尚未配置";
-    $("#notice").innerHTML = state.configured
+    $("#notice").innerHTML = quota + (state.configured
       ? ""
-      : '<div class="banner">还没有配置 DeepSeek API Key。你可以先上传资料、设置提醒；AI 对话需在服务器 .env 填写 Key 后重启。</div>';
+      : '<div class="banner">还没有配置 DeepSeek API Key。你可以先上传资料、设置提醒；AI 对话需在服务器 .env 填写 Key 后重启。</div>');
     renderDue();
     if (!background) render();
+    maybeShowStart();
     return true;
   } catch (e) {
     if (requested !== currentSession) return false;
-    if (!switching && e.status === 404 && requested !== 1) {
-      currentSession = 1;
+    if (e.status === 401) {
+      signedIn = false;
+      showGate(e.message);
+      return false;
+    }
+    if (!switching && e.status === 404 && !retried) {
+      currentSession = 0;
       sessionStorage.removeItem("study.session");
-      return refresh(background);
+      return refresh(background, true);
     }
     toast(e.message);
     return false;
@@ -141,8 +182,8 @@ function renderWorkspace() {
     <div class="workspace-actions">
       <button class="outline small" data-workspace="courses" ${disabled}>＋ 课程</button>
       <button class="outline small" data-workspace="sessions" ${disabled}>＋ 会话</button>
-      <button class="soft small" data-workspace="qq" ${disabled || (current?.id === state.qq_session_id ? "disabled" : "")}>
-      ${current?.id === state.qq_session_id ? "QQ 正在使用" : "在 QQ 继续此会话"}</button>
+      ${state.user?.role === "admin" ? `<button class="soft small" data-workspace="qq" ${disabled || (current?.id === state.qq_session_id ? "disabled" : "")}>
+      ${current?.id === state.qq_session_id ? "QQ 正在使用" : "在 QQ 继续此会话"}</button>` : ""}
     </div>`;
   $("#sessionPicker").onchange = (event) => switchSession(Number(event.target.value));
 }
@@ -155,12 +196,19 @@ function renderDue() {
     )
     .join("");
 }
+function navPages() {
+  const all = { ...pages };
+  if (state.user?.role === "admin") all.invites = ["✉", "邀请同学", "把试用链接发给同学"];
+  return all;
+}
 function render() {
   if (!state.documents) return;
   state.tasks = state.tasks || [];
+  const pagesNow = navPages();
+  if (!pagesNow[page]) page = "chat";
   renderWorkspace();
-  $("#heading").textContent = pages[page][2];
-  $("#nav").innerHTML = Object.entries(pages)
+  $("#heading").textContent = pagesNow[page][2];
+  $("#nav").innerHTML = Object.entries(pagesNow)
     .map(
       ([id, x]) =>
         `<button data-page="${id}" class="${page === id ? "active" : ""}">${x[0]}　${x[1]}</button>`,
@@ -180,7 +228,8 @@ function render() {
     const list = state.tasks || [];
     view.innerHTML = `<div class="card subtle">状态机按页窗推进：读→讲解→出题。暂停保留游标；继续时若无待答题则自动推进下一块。</div>${list.map((t) => `<div class="card row spread"><div><h3>#${t.id} · ${esc(t.document_title || t.title)}</h3><span class="subtle">已覆盖第${t.covered_through}${t.location_kind === "section" ? "片段" : "页"} · 游标第${t.cursor_page} · 每次${t.pages_per_turn}</span> <span class="tag ${t.status === "completed" ? "good" : t.status === "failed" ? "bad" : ""}">${statusLabel[t.status] || esc(t.status)}</span></div><div class="row">${["active", "waiting_answer"].includes(t.status) ? `<button class="outline small" data-action="pauseTask" data-id="${t.id}">暂停</button>` : ""}${["paused", "active", "waiting_answer"].includes(t.status) ? `<button class="soft small" data-action="resumeTask" data-id="${t.id}">继续</button>` : ""}</div></div>`).join("") || empty("还没有学习任务。对话说：带我学完编号1的PDF，每次两页。")}`;
   } else if (page === "library") {
-    view.innerHTML = `<div class="two"><form id="textForm" class="card"><h2>保存文字资料</h2><input id="docTitle" placeholder="资料标题，例如：计算机网络第三章" maxlength="120" required><label>学习内容</label><textarea id="docContent" style="min-height:180px" placeholder="粘贴笔记或课程资料。这里的文字作为资料保存。" required maxlength="200000"></textarea><div class="toolbar" style="margin-top:14px;margin-bottom:0"><button>保存资料</button></div></form><div class="card"><h2>上传 Word / PDF / TXT / Markdown</h2><p class="subtle">支持.docx（旧版.doc请先另存为.docx），每份最多12MB，PDF最多120页。扫描件暂不支持文字识别；部分扫描页面可能无法提取。</p><input id="file" type="file" accept=".docx,.pdf,.txt,.md"><button id="upload" class="soft">＋ 选择文件</button><p class="subtle">Word导入正文和表格文字，按片段引用；不保留排版、图片和原始页码。PDF保留原始页码。原始文件不落盘，仅保存提取后的文字。</p></div></div><h2>我的资料 <span class="tag">${state.documents.length}</span></h2>${state.documents.map((d) => `<div class="card row spread"><div><h3>${esc(d.title)}</h3><span class="subtle">#${d.id} · ${d.page_count} ${locationUnit(d)} · ${d.characters.toLocaleString()} 字符</span></div><div class="row"><button class="soft small" data-action="read" data-id="${d.id}">查看</button><button class="outline small" data-action="summarize" data-id="${d.id}">整理重点</button><button class="danger small" data-action="deleteDoc" data-id="${d.id}">删除</button></div></div>`).join("") || empty("还没有资料，上传第一份笔记吧。")}`;
+    const uploadMb = Math.max(1, Math.round((state.usage?.max_upload_bytes || 12 * 1024 * 1024) / (1024 * 1024)));
+    view.innerHTML = `<div class="two"><form id="textForm" class="card"><h2>保存文字资料</h2><input id="docTitle" placeholder="资料标题，例如：计算机网络第三章" maxlength="120" required><label>学习内容</label><textarea id="docContent" style="min-height:180px" placeholder="粘贴笔记或课程资料。这里的文字作为资料保存。" required maxlength="200000"></textarea><div class="toolbar" style="margin-top:14px;margin-bottom:0"><button>保存资料</button></div></form><div class="card"><h2>上传 Word / PDF / TXT / Markdown</h2><p class="subtle">支持.docx（旧版.doc请先另存为.docx），每份最多${uploadMb}MB，PDF最多120页。扫描件暂不支持文字识别；部分扫描页面可能无法提取。太大或没提出文字时，页面会用白话说明原因。</p><input id="file" type="file" accept=".docx,.pdf,.txt,.md"><button id="upload" class="soft">＋ 选择文件</button><p class="subtle">Word导入正文和表格文字，按片段引用；不保留排版、图片和原始页码。PDF保留原始页码。原始文件不落盘，仅保存提取后的文字。</p></div></div><h2>我的资料 <span class="tag">${state.documents.length}</span></h2>${state.documents.map((d) => `<div class="card row spread"><div><h3>${esc(d.title)}</h3><span class="subtle">#${d.id} · ${d.page_count} ${locationUnit(d)} · ${d.characters.toLocaleString()} 字符</span></div><div class="row"><button class="soft small" data-action="read" data-id="${d.id}">查看</button><button class="outline small" data-action="summarize" data-id="${d.id}">整理重点</button><button class="danger small" data-action="deleteDoc" data-id="${d.id}">删除</button></div></div>`).join("") || empty("还没有资料，上传第一份笔记吧。")}`;
     $("#textForm").onsubmit = async (e) => {
       e.preventDefault();
       await action(
@@ -254,6 +303,22 @@ function render() {
           $("#grade").disabled = false;
         }
       };
+  } else if (page === "invites") {
+    view.innerHTML = `<form id="inviteForm" class="card"><h2>生成邀请链接</h2><p class="subtle">同学打开链接后自己设用户名和密码。过期或收回后，用这张邀请进来的人会退出。</p><div class="two"><div><label for="inviteHours">几小时后过期</label><input id="inviteHours" type="number" min="1" max="720" value="72" required></div><div><label for="inviteUses">最多几个人用</label><input id="inviteUses" type="number" min="1" max="200" value="5" required></div></div><div class="toolbar" style="margin-top:16px"><button>生成链接</button></div><p id="inviteError" class="chat-error"></p></form><div id="inviteList"></div>`;
+    $("#inviteForm").onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const created = await api("/invites", "POST", {
+          hours: Number($("#inviteHours").value),
+          max_uses: Number($("#inviteUses").value),
+        });
+        toast("链接已生成，发给同学即可");
+        await loadInvites(created.link);
+      } catch (error) {
+        $("#inviteError").textContent = error.message;
+      }
+    };
+    loadInvites();
   } else if (page === "activity") {
     view.innerHTML = `<div class="card subtle">这里只记录实际任务与工具调用。失败或中断不会自动重放已经完成的保存操作；请检查结果后再继续。</div>${
       state.runs
@@ -289,12 +354,24 @@ function chatMessage(role, content, created) {
     <div class="turn-text">${esc(content)}</div></div></article>`;
 }
 
+function guideCard() {
+  const onboard = state.onboarding;
+  if (!onboard?.choice) return "";
+  const steps = (onboard.steps || [])
+    .map((step) => `<span class="${step.done ? "done" : ""} ${step.current ? "now" : ""}">${step.done ? "✓ " : ""}${esc(step.title)}</span>`)
+    .join("");
+  const tips = (onboard.failure_tips || []).map((tip) => `<li>${esc(tip)}</li>`).join("");
+  return `<section class="card guide-card" aria-label="第一次试用"><div class="guide-steps">${steps}</div>
+    <strong>${esc(onboard.hint || "")}</strong>
+    ${onboard.feedback ? `<p>${esc(onboard.feedback)}</p>` : ""}
+    <ul class="failure-tips">${tips}</ul></section>`;
+}
 function renderChat(view) {
   const tasks = state.tasks.filter(t => ["active", "waiting_answer", "paused"].includes(t.status));
   const labels = {active: "可继续", waiting_answer: "等待答题", paused: "已暂停"};
   const history = live ? live.history : state.messages;
   const messages = history.map(m => chatMessage(m.role, m.content, m.created)).join("");
-  view.innerHTML = `<div class="workspace">
+  view.innerHTML = `${guideCard()}<div class="workspace">
     <section class="conversation" aria-label="学习对话">
         <div class="chat-head"><div><strong>学习对话</strong><p>资料与进度按课程保存，聊天按会话保存</p></div><span class="connection">● ${state.configured ? "已配置模型" : "未配置模型"}</span></div>
       <div id="chatbox" class="chatbox" role="log">
@@ -362,10 +439,20 @@ async function send(e) {
   render();
   try {
     const response = await fetch("/api/chat/stream", {
-      method: "POST", headers: {"Content-Type": "application/json", "X-Study-Session": String(currentSession)},
+      method: "POST",
+      credentials: "same-origin",
+      headers: {"Content-Type": "application/json", ...sessionHeader()},
       body: JSON.stringify({text}),
     });
-    if (!response.ok || !response.body) throw Error(`无法开始处理（${response.status}）`);
+    if (!response.ok) {
+      let message = `无法开始处理（${response.status}）`;
+      try {
+        const data = await response.json();
+        if (typeof data?.detail === "string") message = data.detail;
+      } catch {}
+      throw Error(message);
+    }
+    if (!response.body) throw Error("无法开始处理");
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = "", finished = false;
@@ -486,6 +573,15 @@ document.addEventListener("click", async (e) => {
     case "pauseTask":
       await action(() => api("/tasks/" + id + "/pause", "POST"), "任务已暂停");
       break;
+    case "copyInvite":
+      navigator.clipboard?.writeText(el.dataset.link).then(
+        () => toast("链接已复制"),
+        () => toast("复制失败，请手动选择链接"),
+      );
+      break;
+    case "revokeInvite":
+      await action(() => api("/invites/" + id + "/revoke", "POST"), "已收回。用过这张邀请的同学会退出。");
+      break;
     case "resumeTask":
       try {
         const r = await api("/tasks/" + id + "/resume", "POST");
@@ -515,5 +611,88 @@ $("#workspaceForm").onsubmit = async (event) => {
   }
 };
 $("#closeDialog").onclick = () => $("#documentDialog").close();
+$("#gate").addEventListener("cancel", (event) => event.preventDefault());
+$("#startDialog").addEventListener("cancel", (event) => event.preventDefault());
+$("#loginForm").onsubmit = async (event) => {
+  event.preventDefault();
+  $("#gateError").textContent = "";
+  try {
+    await api("/auth/login", "POST", {username: $("#loginUser").value, password: $("#loginPass").value});
+    currentSession = 0;
+    sessionStorage.removeItem("study.session");
+    await refresh();
+  } catch (error) {
+    $("#gateError").textContent = error.message;
+  }
+};
+$("#showLogin").onclick = () => {
+  $("#redeemForm").hidden = true;
+  $("#loginForm").hidden = false;
+  $("#loginUser").focus();
+};
+$("#redeemForm").onsubmit = async (event) => {
+  event.preventDefault();
+  $("#gateError").textContent = "";
+  try {
+    await api("/auth/redeem", "POST", {
+      code: inviteCodeFromLocation(),
+      username: $("#redeemUser").value,
+      password: $("#redeemPass").value,
+    });
+    currentSession = 0;
+    sessionStorage.removeItem("study.session");
+    history.replaceState(null, "", "/");
+    await refresh();
+  } catch (error) {
+    $("#gateError").textContent = error.message;
+  }
+};
+$("#logout").onclick = async () => {
+  try { await api("/auth/logout", "POST"); } catch {}
+  signedIn = false;
+  currentSession = 0;
+  state = {};
+  sessionStorage.removeItem("study.session");
+  showGate("");
+};
+async function chooseStart(choice) {
+  $("#startError").textContent = "";
+  try {
+    await api("/onboarding", "POST", {choice});
+    await refresh();
+    if (choice === "upload") {
+      page = "library";
+      render();
+    }
+  } catch (error) {
+    $("#startError").textContent = error.message;
+  }
+}
+$("#chooseSample").onclick = () => chooseStart("sample");
+$("#chooseUpload").onclick = () => chooseStart("upload");
+function maybeShowStart() {
+  const dialog = $("#startDialog");
+  if (!dialog) return;
+  if (state.onboarding?.needs_choice) {
+    if (!dialog.open) dialog.showModal();
+  } else if (dialog.open) dialog.close();
+}
+async function loadInvites() {
+  const host = $("#inviteList");
+  if (!host) return;
+  try {
+    const data = await api("/invites");
+    host.innerHTML = data.invites.map((item) => {
+      const link = item.link.startsWith("http") ? item.link : location.origin + item.link;
+      const status = item.revoked ? "已收回" : `已用 ${item.use_count}/${item.max_uses}`;
+      return `<div class="card"><div class="row spread"><strong>${esc(status)}</strong><span class="subtle">到期 ${esc(item.expires_at)}</span></div>
+        <input class="invite-link" readonly value="${esc(link)}">
+        <div class="row" style="margin-top:8px">${item.revoked ? "" : `<button class="outline small" data-action="revokeInvite" data-id="${item.id}">收回</button>`}
+        <button class="soft small" data-action="copyInvite" data-link="${esc(link)}">复制链接</button></div></div>`;
+    }).join("") || empty("还没有邀请。生成一个发给同学。");
+  } catch (error) {
+    host.innerHTML = `<p class="chat-error">${esc(error.message)}</p>`;
+  }
+}
 refresh();
-setInterval(() => refresh(true), 10000);
+setInterval(() => { if (signedIn) refresh(true); }, 10000);
