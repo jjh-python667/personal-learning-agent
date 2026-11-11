@@ -6,7 +6,7 @@ Personal Learning Agent · v0.4.0
 
 **中文。** 这是一个围绕自己的学习资料使用的个人 Agent。可以上传 PDF、DOCX、UTF-8 TXT 或 Markdown，在网页里提问，也可以选配官方 QQ 机器人。学习可以按块进行：读一段、讲解、出一道题、答题，再继续；任务可以暂停。v0.4.0 可以让管理员在网页上邀请同学。每个人只看到自己的资料、课程和进度。QQ 仍然只处理 `.env` 里绑定的一位主人。这是一个可运行的学习原型，限制写在后面。作者是大一人工智能专业。代码、测试和文档由 AI 编程助手协助完成。
 
-**English.** This is a personal study agent for your own materials. You can upload a PDF, DOCX, UTF-8 text file, or Markdown file, then ask questions in the web page. An official QQ bot is optional. A study task walks through one chunk at a time: read, explain, ask one question, take an answer, then continue. You can pause. Version 0.4.0 lets an admin invite classmates on the web; each account only sees its own courses, files, and progress. The QQ bot still accepts only the one owner set in `QQ_OWNER_OPENID`. It is a working prototype, not a finished tutor. The author is a first-year AI undergraduate. An AI coding assistant helped write the code, tests, and docs.
+**English.** This is a personal study agent for your own materials. You can upload a PDF, DOCX, UTF-8 text file, or Markdown file, then ask questions in the web page. An official QQ bot is optional. A study task walks through one chunk at a time: read, explain, ask one question, take an answer, then continue. You can pause. Version 0.4.0 lets an admin invite classmates on the web; each account only sees its own courses, files, and progress. The QQ bot still accepts only the one owner set in `QQ_OWNER_OPENID`. It is a working prototype. The limits are below. The author is a first-year AI undergraduate. An AI coding assistant helped write the code, tests, and docs.
 
 ## 界面
 
@@ -16,7 +16,7 @@ Personal Learning Agent · v0.4.0
 
 ![资料库：示例笔记和上传](docs/images/web-v040-library.png)
 
-更早的界面在 [docs/images/web-v020.png](docs/images/web-v020.png)（v0.2.0，模拟回复）。
+v0.2.0 的界面图在 [docs/images/web-v020.png](docs/images/web-v020.png)。
 
 ## 一轮学习怎么走
 
@@ -59,7 +59,7 @@ flowchart TD
 | 模型 | DeepSeek API。未配置密钥时仍可手动管理资料 |
 | 可选渠道 | QQ 官方机器人，`qq-botpy`。同学试用走网页邀请，不走 QQ |
 
-代码曾在 Windows Python 3.9.13 跑通过测试。有一台部署环境是 Ubuntu / Python 3.14。不同环境仍要自己确认依赖能装上。
+测试曾在 Windows Python 3.9.13 上跑过。部署环境里用过 Ubuntu / Python 3.14。
 
 ## 在本机运行
 
@@ -71,9 +71,14 @@ python -m venv .venv
 
 激活虚拟环境：
 
+```bat
+rem Windows cmd
+.venv\Scripts\activate
+```
+
 ```powershell
 # Windows PowerShell
-.\.venv\Scripts\Activate.ps1
+.venv\Scripts\Activate.ps1
 ```
 
 ```bash
@@ -141,17 +146,16 @@ Word 没有固定页码，任务按提取后的片段推进。
 
 普通对话允许模型选择工具。资料列表请求和学习任务的关键步骤由程序控制。模型生成的文本不直接决定数据库进度。详细入门说明见 [代码阅读笔记](docs/CODE_GUIDE.md)。
 
-## 验证到哪一步
+## 测试
 
-| 事项 | 现在能说的 |
+| 事项 | 情况 |
 | --- | --- |
-| 本地 51 项测试 | 通过。依据见 [v0.4 验收](docs/ACCEPTANCE_v0.4.md)。临时数据库，模拟模型 |
-| 真机整页、邀请页、五步引导 | 尚未在手机上走完。v0.3 的浏览器检查不能当成这一版邀请页面已经点过 |
-| 真实 DeepSeek 的讲解和批改 | 尚未验证 |
-| 真实 QQ 单聊收发 | 尚未验证。范围仍应只有主人 |
-| 公网 HTTPS 后面的注册、Cookie 和邀请链接 | 尚未验证 |
-| 两台浏览器同时点击时的限额 | 尚未验证。现有测试覆盖的是进程内重叠请求 |
-| 代码、测试与文档 | 由 AI 编程助手协助完成。验收范围以记录为准 |
+| 本地 51 项测试 | 通过。临时数据库，模拟模型。见 [v0.4 验收](docs/ACCEPTANCE_v0.4.md) |
+| 手机上的邀请和五步引导 | 还没有走完 |
+| 真实 DeepSeek 的讲解和批改 | 还没有用真实接口看过 |
+| 真实 QQ 单聊 | 还没有收发过。机器人只处理绑定的主人 |
+| 公网 HTTPS 上的注册、Cookie 和邀请链接 | 还没有检查 |
+| 两台浏览器同时点击 | 还没有试过。现有测试是同一进程里的重叠请求 |
 
 ## QQ 与服务器部署
 
@@ -189,7 +193,7 @@ API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型
 
 参考了 [DeepSeek Super-agent 原型](https://github.com/deepseek-ai/dsh-superagent-prototype) 的任务状态、持久记录与执行证据设计；本项目没有引入其源码，也没有实现多执行器或 GitHub 工单系统。模型接口参考 [DeepSeek 文档](https://api-docs.deepseek.com/)，QQ 接入使用 [腾讯官方 botpy SDK](https://github.com/tencent-connect/botpy)。
 
-版本变更见 [CHANGELOG](CHANGELOG.md)。每版为什么改、碰到了什么问题、怎么验证，见 [开发日志](docs/DEV_LOG.md)。已打标签的版本到 v0.3.0。v0.4.0 以 `VERSION` 和 CHANGELOG 为准。
+版本变更见 [CHANGELOG](CHANGELOG.md)。每版为什么改、碰到了什么问题、怎么验证，见 [开发日志](docs/DEV_LOG.md)。当前版本是 v0.4.0，写在 `VERSION` 里。Git 标签到 v0.3.0。
 
 ## 文档与相关项目
 
