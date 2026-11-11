@@ -91,7 +91,12 @@ def parse_start_intent(text):
 
 
 def parse_control_intent(text):
-    """Return ('pause'|'resume'|'list'|('resume_id', id)|None)."""
+    """暂停、继续或列出任务。
+
+    返回 'list'、'pause'、'resume'、('resume_id', id)、('pause_id', id)、
+    ('select_id', id)，或 None。很短的单独数字会返回 select_id；
+    调用方再决定当时是不是在让用户选任务编号。
+    """
     normalized = re.sub(r'[\s，。！？、,.!?：:]+', '', text.strip())
     if re.fullmatch(r'(?:请|麻烦|帮我)?(?:列出|查看|显示)(?:一下)?(?:学习)?任务(?:列表)?', normalized):
         return 'list'

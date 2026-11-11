@@ -7,4 +7,4 @@ if (-not (Test-Path -LiteralPath '.venv/Scripts/python.exe')) {
 & '.venv/Scripts/python.exe' -m pip install -r requirements.txt
 if ($LASTEXITCODE -ne 0) { throw '依赖安装失败' }
 if (-not (Test-Path -LiteralPath '.env')) { Copy-Item -LiteralPath '.env.example' -Destination '.env' }
-& '.venv/Scripts/python.exe' -m uvicorn main:app --host 127.0.0.1 --port 8000
+& '.venv/Scripts/python.exe' -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1

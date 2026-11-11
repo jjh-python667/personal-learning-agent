@@ -1,6 +1,7 @@
 """数据库模块：保存资料、聊天和任务，用完连接后及时关闭。"""
 import json
 import os
+import re
 import sqlite3
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -286,7 +287,6 @@ def cached_sources(query):
 
 def _rank_sources(query, documents):
     """用关键词找资料；中文还会拆成相邻的两个字来匹配。不是向量检索。"""
-    import re
     terms = set(re.findall(r'[a-z0-9_]{2,}|[\u4e00-\u9fff]', query.lower()))
     for word in re.findall(r'[\u4e00-\u9fff]+', query):
         terms.update(word[i:i+2] for i in range(len(word)-1))
