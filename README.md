@@ -135,6 +135,7 @@ Word 没有固定页码，任务按提取后的片段推进。
 ├── deploy.sh               安装到 /opt/study-agent 的脚本
 ├── setup-qq.sh             可选 QQ 服务安装
 ├── CHANGELOG.md            版本记录
+├── LICENSE                 MIT
 └── VERSION                 0.4.0
 ```
 
@@ -184,7 +185,7 @@ Linux 首次安装及 systemd 配置见 [部署说明](docs/DEPLOYMENT.md)。网
 
 API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型处理时会发送给 DeepSeek，使用前请确认资料可以发送。数据库包含聊天和个人资料，不要提交到 GitHub。
 
-本仓库不包含真实配置、私人文档、生产数据库、SSH 密钥或服务器地址。依赖库仍遵守各自许可证。
+本仓库不包含真实配置、私人文档、生产数据库、SSH 密钥或服务器地址。许可证为 [MIT](LICENSE)。依赖库仍遵守各自许可证。
 
 参考了 [DeepSeek Super-agent 原型](https://github.com/deepseek-ai/dsh-superagent-prototype) 的任务状态、持久记录与执行证据设计；本项目没有引入其源码，也没有实现多执行器或 GitHub 工单系统。模型接口参考 [DeepSeek 文档](https://api-docs.deepseek.com/)，QQ 接入使用 [腾讯官方 botpy SDK](https://github.com/tencent-connect/botpy)。
 
@@ -201,6 +202,7 @@ API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型
 | [v0.4 验收](docs/ACCEPTANCE_v0.4.md) | 本版 51 项测试与待验证项 |
 | [开发日志](docs/DEV_LOG.md) | 每版为什么改 |
 | [版本记录](CHANGELOG.md) | 功能清单 |
+| [MIT 许可证](LICENSE) | 本仓库许可证 |
 
 同一作者的其他学习作品：
 
