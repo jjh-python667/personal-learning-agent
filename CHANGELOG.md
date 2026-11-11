@@ -9,13 +9,7 @@
 
 ### Changed
 
-- 2026-11-11：README 增加中英文介绍、真实目录、安装与测试命令，并写明只有代码里已经有的能力。加入仓库里 GitHub Actions 工作流 `Python tests` 的徽章。三张界面图是当天在本机打开当前版本得到的：没有 `APP_PASSWORD`、没有 `DEEPSEEK_API_KEY`，点了「体验示例」，资料来自 `samples/`，没有模型回复，也没有连接 QQ。v0.2.0 的旧截图仍留在 `docs/images/web-v020.png`，并标明不是现在的界面。
-- 2026-11-11：写明 `AI_MIN_INTERVAL_SECONDS` 缺失或为空时，程序按 0 处理；`.env.example` 里的 3 只在复制成 `.env` 之后生效。没有改这个判断。
-- 2026-11-11：`.gitignore` 忽略测试缓存、覆盖率、打包目录。`.gitattributes` 把 `*.png` 标成二进制。
-- 2026-11-11：`start.ps1` 显式加上 `--workers 1`。未设置 `WEB_CONCURRENCY` 时，Uvicorn 不写这个参数也会用 1 个 worker。行为不变。
-- 2026-11-11：`qq_bridge.py` 只调整空格和换行，收发、绑定主人和回复序号没有改。`db.py` 把 `re` 的导入移到文件顶部。`lesson.py` 的 `parse_control_intent` 文档补上实际会返回的 `pause_id` 和 `select_id`。
-- 2026-11-11：版本记录改成 Keep a Changelog。0.1.0 到 0.4.0 的内容来自原来的记录、提交日期和已有标签，没有新写功能。
-- 2026-11-11：没有新增测试。`python -m unittest discover -s tests -v` 在 Python 3.12.3 上跑完，51 项通过，退出码 0。GitHub Actions 仍使用 Python 3.11。
+- 2026-11-11：文档：中英 README、v0.4 截图；整理：格式与注释，行为不变。
 
 ## [0.4.0] - 2026-11-05
 

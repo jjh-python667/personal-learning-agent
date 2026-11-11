@@ -4,31 +4,19 @@ Personal Learning Agent · v0.4.0
 
 [![Python tests](https://github.com/jjh-python667/personal-learning-agent/actions/workflows/tests.yml/badge.svg)](https://github.com/jjh-python667/personal-learning-agent/actions/workflows/tests.yml)
 
-这枚徽章指向仓库里的 GitHub Actions 工作流 `Python tests`（`.github/workflows/tests.yml`）。它显示默认分支上最近一次该工作流的结果。它不能代替下面的限制说明，也不表示公网或真机已经验收。
-
 **中文。** 这是一个围绕自己的学习资料使用的个人 Agent。可以上传 PDF、DOCX、UTF-8 TXT 或 Markdown，在网页里提问，也可以选配官方 QQ 机器人。学习可以按块进行：读一段、讲解、出一道题、答题，再继续；任务可以暂停。v0.4.0 可以让管理员在网页上邀请同学。每个人只看到自己的资料、课程和进度。QQ 仍然只处理 `.env` 里绑定的一位主人。这是一个可运行的学习原型，限制写在后面。作者是大一人工智能专业。代码、测试和文档由 AI 编程助手协助完成。
 
 **English.** This is a personal study agent for your own materials. You can upload a PDF, DOCX, UTF-8 text file, or Markdown file, then ask questions in the web page. An official QQ bot is optional. A study task walks through one chunk at a time: read, explain, ask one question, take an answer, then continue. You can pause. Version 0.4.0 lets an admin invite classmates on the web; each account only sees its own courses, files, and progress. The QQ bot still accepts only the one owner set in `QQ_OWNER_OPENID`. It is a working prototype, not a finished tutor. The author is a first-year AI undergraduate. An AI coding assistant helped write the code, tests, and docs.
 
-The sections below are in Chinese because the interface is Chinese. The English notes near the end repeat how to install, run, and test, and list the same limits in short form.
-
 ## 界面
 
-下面三张图是 2026-11-11 在本机 `http://127.0.0.1:8000` 打开当前代码得到的。没有填写 `APP_PASSWORD`，也没有填写 `DEEPSEEK_API_KEY`。按代码，本机请求会当作管理员。没有向 DeepSeek 发请求，画面里也没有模型回复。点「体验示例」之后，资料来自仓库里的 `samples/`。
+![第一次打开，选择体验示例或上传自己的资料](docs/images/web-v040-start.png)
 
-![第一次打开时的选择框：体验示例，或上传自己的资料。横幅写着还没有配置 DeepSeek。](docs/images/web-v040-start.png)
+![学习对话：五步引导，右侧是资料和学习进度](docs/images/web-v040-workspace.png)
 
-第一次进入、资料还是空的时候，页面会先问用示例还是自己的文件。
+![资料库：示例笔记和上传](docs/images/web-v040-library.png)
 
-![点过体验示例之后的学习对话。上方是问、分条、学、答、继续；右侧可以选示例笔记。状态是未配置模型。](docs/images/web-v040-workspace.png)
-
-点「体验示例」之后的学习对话。五步引导在上方。右侧选中的是示例笔记。按钮「QQ 正在使用」只表示当前会话被记成 QQ 要用的会话，这次没有连接 QQ。
-
-![资料库页面，列出两份示例笔记，旁边是上传表单。](docs/images/web-v040-library.png)
-
-同一状态下的资料库。列表里是那两份示例笔记。上传表单是页面自带的，不是这次另外上传的文件。
-
-更早的 v0.2.0 截图还在 [`docs/images/web-v020.png`](docs/images/web-v020.png)。那张图用的是当时的演示资料和模拟模型回复，不是现在这个界面。
+更早的界面在 [docs/images/web-v020.png](docs/images/web-v020.png)（v0.2.0，模拟回复）。
 
 ## 一轮学习怎么走
 
@@ -49,8 +37,6 @@ flowchart TD
 网页一次提问会按顺序出现两到三条气泡。QQ 单聊按回复序号分别发送。两边用的是同一个后端。
 
 ## 这个版本能做什么
-
-这些都在当前代码里：
 
 - 上传 PDF、DOCX、UTF-8 TXT 和 Markdown，保存提取后的文字。原始文件不落盘。
 - 用关键词和中文相邻双字检索资料，引用 PDF 页码或 Word 片段编号，再读取指定位置。
@@ -73,7 +59,7 @@ flowchart TD
 | 模型 | DeepSeek API。未配置密钥时仍可手动管理资料 |
 | 可选渠道 | QQ 官方机器人，`qq-botpy`。同学试用走网页邀请，不走 QQ |
 
-仓库里更早的记录写过：测试曾在 Windows Python 3.9.13 跑过；有一台部署环境是 Ubuntu / Python 3.14。不同环境仍要自己确认依赖能装上。这次整理时，现有测试在 Python 3.12.3 上又跑了一次，见 [版本记录](CHANGELOG.md)。
+代码曾在 Windows Python 3.9.13 跑通过测试。有一台部署环境是 Ubuntu / Python 3.14。不同环境仍要自己确认依赖能装上。
 
 ## 在本机运行
 
@@ -102,11 +88,9 @@ python -m pip install -r requirements.txt
 python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
 ```
 
-打开 <http://127.0.0.1:8000>。没有配置 `APP_PASSWORD` 时，只有本机请求能进去，并且会被当成管理员。配了密码之后，管理员用户名是 `admin`，密码是 `APP_PASSWORD`。同学不使用这个密码：管理员在网页「邀请同学」里生成链接，同学自己注册。步骤写在 [怎么试用](docs/TRY.md)。发给同学的地址需要 HTTPS，配置见 [部署说明](docs/DEPLOYMENT.md)。公网 HTTPS 部署还没有在本版验收里实测。
+打开 <http://127.0.0.1:8000>。没有配置 `APP_PASSWORD` 时，只有本机请求能进去，并且会被当成管理员。配了密码之后，管理员用户名是 `admin`，密码是 `APP_PASSWORD`。同学不使用这个密码：管理员在网页「邀请同学」里生成链接，同学自己注册。步骤写在 [怎么试用](docs/TRY.md)。发给同学的地址需要 HTTPS，配置见 [部署说明](docs/DEPLOYMENT.md)。
 
-Windows 可以用 `start.ps1` 创建虚拟环境、安装依赖并启动。脚本和 `deploy.sh` 一样，显式使用一个 worker。运行中的任务不要拆到多个后端进程。
-
-测试：
+Windows 可以用 `start.ps1` 创建虚拟环境、安装依赖并启动。运行中的任务不要拆到多个后端进程。
 
 ```bash
 python -m unittest discover -s tests -v
@@ -155,39 +139,19 @@ Word 没有固定页码，任务按提取后的片段推进。
 └── VERSION                 0.4.0
 ```
 
-`deploy.sh` 和 `setup-qq.sh` 是给自己的 Linux 机器用的安装脚本。仓库里没有服务器地址，也没有已经完成的公网验收。
-
 普通对话允许模型选择工具。资料列表请求和学习任务的关键步骤由程序控制。模型生成的文本不直接决定数据库进度。详细入门说明见 [代码阅读笔记](docs/CODE_GUIDE.md)。
 
 ## 验证到哪一步
 
-```bash
-python -m unittest discover -s tests -v
-```
-
-[v0.4 验收](docs/ACCEPTANCE_v0.4.md) 记录的是 2026-11-05 的 **51 项本地测试通过**。测试使用临时数据库和模拟模型响应，覆盖课程和会话分离、旧数据迁移、双账号隔离、邀请收回、额度、分条回复、连学和缓存。没有请求真实的 DeepSeek，也没有连接真实 QQ。2026-11-11 这次整理没有新增测试；同一条命令在 Python 3.12.3 上又跑过，结果写在 [版本记录](CHANGELOG.md)。GitHub Actions 用的是 Python 3.11，以那次检查的结果为准。
-
 | 事项 | 现在能说的 |
 | --- | --- |
-| 本地 51 项测试 | 2026-11-05 的验收记录为通过。这次整理后又在 Python 3.12.3 上跑过同一套测试 |
-| 真机整页、邀请页、五步引导 | 上面三张图只覆盖本机、未配置模型、点了「体验示例」的页面。没有在手机上走完邀请、注册和退出 |
+| 本地 51 项测试 | 通过。依据见 [v0.4 验收](docs/ACCEPTANCE_v0.4.md)。临时数据库，模拟模型 |
+| 真机整页、邀请页、五步引导 | 尚未在手机上走完。v0.3 的浏览器检查不能当成这一版邀请页面已经点过 |
 | 真实 DeepSeek 的讲解和批改 | 尚未验证 |
 | 真实 QQ 单聊收发 | 尚未验证。范围仍应只有主人 |
 | 公网 HTTPS 后面的注册、Cookie 和邀请链接 | 尚未验证 |
 | 两台浏览器同时点击时的限额 | 尚未验证。现有测试覆盖的是进程内重叠请求 |
 | 代码、测试与文档 | 由 AI 编程助手协助完成。验收范围以记录为准 |
-
-更早版本的记录见 [验证记录](docs/VALIDATION.md)。
-
-## 接下来要补的验证
-
-- 在手机或浏览器里走完邀请、选择示例、五步引导和退出。
-- 用真实 DeepSeek 看讲解和批改。
-- 用真实 QQ 单聊确认只处理绑定的主人。
-- 在自己配置的 HTTPS 反代后面检查注册、Cookie 和邀请链接。
-- 用两台浏览器同时点击，看限额在真实延迟下的提示。
-
-这些都还没做。
 
 ## QQ 与服务器部署
 
@@ -200,7 +164,7 @@ python qq_bridge.py
 
 先在 `.env` 配置 `QQ_APP_ID`、`QQ_APP_SECRET`、`APP_PASSWORD`。首次未填写 `QQ_OWNER_OPENID` 时不会执行收到的请求，只在终端记录发送人的 OpenID。自己发送一条测试消息，确认发信身份后配置该值并重启。只允许绑定的主人使用，QQ 不需要个人账号密码。
 
-Linux 首次安装及 systemd 配置见 [部署说明](docs/DEPLOYMENT.md)。网页默认只监听本机，远程使用时通过 SSH 隧道访问。公开互联网访问需要自行配置 HTTPS 等保护，不能直接把默认服务开放给所有人。这一段是部署方法，不是已经在公网验证过的结果。
+Linux 首次安装及 systemd 配置见 [部署说明](docs/DEPLOYMENT.md)。网页默认只监听本机，远程使用时通过 SSH 隧道访问。公开互联网访问需要自行配置 HTTPS 等保护，不能直接把默认服务开放给所有人。
 
 ## 当前限制
 
@@ -225,7 +189,7 @@ API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型
 
 参考了 [DeepSeek Super-agent 原型](https://github.com/deepseek-ai/dsh-superagent-prototype) 的任务状态、持久记录与执行证据设计；本项目没有引入其源码，也没有实现多执行器或 GitHub 工单系统。模型接口参考 [DeepSeek 文档](https://api-docs.deepseek.com/)，QQ 接入使用 [腾讯官方 botpy SDK](https://github.com/tencent-connect/botpy)。
 
-版本变更见 [CHANGELOG](CHANGELOG.md)。每版为什么改、碰到了什么问题、怎么验证，见 [开发日志](docs/DEV_LOG.md)。代码改动可从提交记录对照查看。已打标签的版本到 v0.3.0；v0.4.0 以仓库里的 `VERSION` 和 CHANGELOG 为准，还没有单独的 Release，也还没有 `v0.4.0` 标签。
+版本变更见 [CHANGELOG](CHANGELOG.md)。每版为什么改、碰到了什么问题、怎么验证，见 [开发日志](docs/DEV_LOG.md)。已打标签的版本到 v0.3.0。v0.4.0 以 `VERSION` 和 CHANGELOG 为准。
 
 ## 文档与相关项目
 
@@ -245,31 +209,3 @@ API Key、网页密码、QQ Secret 都留在后端。上传内容在请求模型
 - [案头 ANTOU](https://github.com/jjh-python667/antou-office-agent)：本地办公 Agent。[作品页](https://jjh-python667.github.io/projects/antou-office-agent.html)
 - [资讯台 Newsdesk](https://github.com/jjh-python667/newsdesk)：Cloudflare Workers + D1 的资讯阅读。[作品页](https://jjh-python667.github.io/projects/newsdesk.html)
 - [作品集](https://jjh-python667.github.io/) · [学习搭子作品页](https://jjh-python667.github.io/projects/personal-learning-agent.html)
-
-## English notes
-
-**What it does.** Upload a PDF, DOCX, UTF-8 TXT, or Markdown file. The program stores extracted text, not the original file. Search is keywords plus adjacent Chinese character pairs, not embeddings. You can read a page or a Word section, explain it, ask one question, grade an answer, and keep wrong answers. Study tasks remember the covered position and can pause. “连学” continues to the next chunk after an answer in the chat. Repeated searches are cached until a document changes. The web app has courses, several chats per course, reminders, and admin invite links with an expiry and a use limit. QQ, if you run it, stays bound to one owner.
-
-**Run.**
-
-```bash
-python -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements.txt
-cp .env.example .env
-python -m uvicorn main:app --host 127.0.0.1 --port 8000 --workers 1
-```
-
-On Windows, `start.ps1` does the virtualenv, install, and start. Open <http://127.0.0.1:8000>. Without `APP_PASSWORD`, only a localhost request is allowed, and it is treated as `admin`. Classmates use an invite link, not that password. QQ needs `requirements-qq.txt` and `python qq_bridge.py`.
-
-**Test.**
-
-```bash
-python -m unittest discover -s tests -v
-```
-
-The 2026-11-05 acceptance note records 51 tests, a temporary database, and a mocked model. This polish did not add tests. The same command was run again on Python 3.12.3; see the changelog. Actions uses Python 3.11.
-
-**Layout.** Python modules stay in the repository root so `uvicorn main:app` and the install scripts keep working. `static/` is the page, `samples/` holds two short notes, `tests/` is the suite, and `docs/` has the longer guides and screenshots.
-
-**Limits worth knowing before you rely on it.** No OCR, no encrypted PDF, no legacy `.doc`. Default upload cap is 12MB. A PDF stops at 120 pages. Extracted PDF or Word text stops at 300,000 characters; TXT and Markdown stop at 200,000. One page sent to the model stops at 6,000 characters. Grading comes from the model and can be wrong. Reminders show only on the open web page. Keep one worker. Real DeepSeek replies, a real QQ chat, a phone walkthrough of invites, and HTTPS in public are not recorded as done. Do not commit `.env` or the SQLite database.
